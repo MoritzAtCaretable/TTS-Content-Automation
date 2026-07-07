@@ -1,0 +1,14 @@
+# Python-Abhängigkeiten für TTS Studio
+# Installation:  pip install -r requirements.txt
+
+gspread
+google-auth
+requests
+openai-whisper
+pydub
+google-genai
+python-dotenv
+
+# audioop wurde in Python 3.13 aus der Standardbibliothek entfernt —
+# dieses Backport wird nur dort gebraucht (pydub benötigt es).
+audioop-lts ; python_version >= "3.13"

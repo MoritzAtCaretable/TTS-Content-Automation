@@ -1,0 +1,30 @@
+# ── Geheimnisse / lokale Konfiguration — NIEMALS committen! ──
+.env
+service_account.json
+*.json.key
+
+# ── Virtuelle Umgebung ──
+venv/
+.venv/
+
+# ── Generierte Audios & Review-Artefakte ──
+tts-output/
+00_tts-output/
+01_review-needed/
+*.opus
+*.mp3
+*.wav
+review.html
+review_data.json
+.tts_gui_error.log
+
+# ── macOS App-Bundle (wird lokal per fix_app.py gebaut) ──
+TTS Studio.app/
+
+# ── Python-Cache ──
+__pycache__/
+*.pyc
+
+# ── Betriebssystem ──
+.DS_Store
+Thumbs.db
