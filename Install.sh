@@ -28,12 +28,14 @@ else
     echo "✓ Homebrew vorhanden"
 fi
 
-# 2. Python & ffmpeg
-echo "→ Python & ffmpeg prüfen/installieren…"
+# 2. Python & ffmpeg & git
+echo "→ Python, ffmpeg & git prüfen/installieren…"
 brew list python >/dev/null 2>&1 || brew install python
 brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+command -v git >/dev/null 2>&1 || brew install git
 echo "✓ Python: $(python3 --version)"
 echo "✓ ffmpeg: $(ffmpeg -version | head -1)"
+echo "✓ git: $(git --version)"
 
 # 3. venv + Pakete
 if [ ! -d "venv" ]; then

@@ -34,6 +34,19 @@ if errorlevel 1 (
 )
 echo [OK] ffmpeg gefunden
 
+REM 2b. git pruefen, ggf. per winget installieren
+where git >nul 2>&1
+if errorlevel 1 (
+    echo [!] git nicht gefunden - versuche Installation per winget...
+    winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
+    echo.
+    echo [!] WICHTIG: Bitte dieses Fenster schliessen, ein NEUES Terminal oeffnen
+    echo     und install.bat erneut ausfuehren, damit git im PATH landet.
+    pause
+    exit /b 0
+)
+echo [OK] git gefunden
+
 REM 3. venv + Pakete
 if not exist "venv" (
     echo -^> Virtuelle Umgebung anlegen...
