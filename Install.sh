@@ -17,6 +17,11 @@ echo "════════════════════════�
 echo "  TTS Studio — Einrichtung (macOS)"
 echo "════════════════════════════════════════"
 
+# ─────────────────────────────────────────────
+# HIER ANPASSEN: Repo-URL (für den ZIP→Git-Fall)
+# ─────────────────────────────────────────────
+REPO_URL="https://github.com/MoritzAtCaretable/TTS-Content-Automation.git"
+
 # 1. Homebrew
 if ! command -v brew >/dev/null 2>&1; then
     echo "→ Homebrew wird installiert (einmalig)…"
@@ -36,6 +41,26 @@ command -v git >/dev/null 2>&1 || brew install git
 echo "✓ Python: $(python3 --version)"
 echo "✓ ffmpeg: $(ffmpeg -version | head -1)"
 echo "✓ git: $(git --version)"
+
+# 2b. Falls dieser Ordner KEIN Git-Checkout ist (ZIP-Download), nachträglich zu
+#     einem machen — dann funktioniert der Update-Button. Es wird NICHTS gelöscht:
+#     nur der .git-Ordner wird "aufgepfropft". .env & service_account.json bleiben
+#     unangetastet (Git ignoriert sie ohnehin).
+if [ ! -d ".git" ]; then
+    echo "→ Kein Git-Checkout erkannt (vermutlich ZIP). Richte Git-Verbindung ein…"
+    TMP_CLONE="$(mktemp -d)"
+    if git clone --depth 1 "$REPO_URL" "$TMP_CLONE/repo" >/dev/null 2>&1; then
+        mv "$TMP_CLONE/repo/.git" "./.git"
+        rm -rf "$TMP_CLONE"
+        # Versionierte Dateien auf den Repo-Stand bringen; ignorierte (.env etc.) bleiben.
+        git reset --hard HEAD >/dev/null 2>&1 || true
+        echo "✓ Git-Verbindung hergestellt — Update-Button ist jetzt aktiv."
+    else
+        rm -rf "$TMP_CLONE"
+        echo "⚠ Konnte Git-Verbindung nicht herstellen (kein Zugriff/Netz?)."
+        echo "  Läuft trotzdem — nur der Update-Button bleibt inaktiv."
+    fi
+fi
 
 # 3. venv + Pakete
 if [ ! -d "venv" ]; then
