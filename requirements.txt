@@ -8,6 +8,7 @@ openai-whisper
 pydub
 google-genai
 python-dotenv
+customtkinter
 
 # audioop wurde in Python 3.13 aus der Standardbibliothek entfernt —
 # dieses Backport wird nur dort gebraucht (pydub benötigt es).

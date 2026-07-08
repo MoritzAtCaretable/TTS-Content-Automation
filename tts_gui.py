@@ -54,6 +54,12 @@ RED = "#c0392b"             # destruktiv (Review zurücksetzen)
 RED_HOVER = "#922b21"
 GREY = ("gray75", "gray30")         # dezente Hilfs-Buttons (Update)
 GREY_HOVER = ("gray65", "gray40")
+# Fenster-Hintergrund: sehr blasses, unaufdringliches Grün (Light-Mode) bzw. ein
+# minimal grünstichiges Dunkelgrau (Dark-Mode). Hebt die App vom hellgrauen
+# Converter-Hintergrund ab, ohne im Einzelnen zu stören.
+APP_BG = ("#eef4ef", "#1c2320")
+# Karten liegen als leicht abgesetzte Flächen auf dem grünen Grund.
+CARD_BG = ("#f7faf8", "#242b28")
 
 
 def sheet_url() -> str:
@@ -91,6 +97,9 @@ class TTSStudio(ctk.CTk):
         # "green" als Basis, damit ungestylte Widgets (Fokusrahmen etc.) nicht
         # blau bleiben; die Kern-Widgets werden zusätzlich petrol eingefärbt.
         ctk.set_default_color_theme("green")
+        # Dezenter blassgrüner Fenster-Hintergrund (hebt sich vom hellgrauen
+        # Converter-Fenster ab, ohne aufdringlich zu wirken).
+        self.configure(fg_color=APP_BG)
 
         self.log_queue = queue.Queue()
         self.running = False
@@ -153,7 +162,7 @@ class TTSStudio(ctk.CTk):
             command=self.reset_layout)
 
         # Karte: ElevenLabs / Voice-Modell
-        voice_frame = ctk.CTkFrame(c)
+        voice_frame = ctk.CTkFrame(c, fg_color=CARD_BG)
         voice_frame.grid(row=1, column=0, padx=20, pady=(16, 8), sticky="ew")
         voice_frame.grid_columnconfigure(2, weight=1)
         ctk.CTkLabel(voice_frame, text="ElevenLabs", font=bold13).grid(
@@ -167,7 +176,7 @@ class TTSStudio(ctk.CTk):
         self.model_menu.grid(row=1, column=1, pady=(4, 12), sticky="w")
 
         # Karte: Zielordner
-        folder_frame = ctk.CTkFrame(c)
+        folder_frame = ctk.CTkFrame(c, fg_color=CARD_BG)
         folder_frame.grid(row=2, column=0, padx=20, pady=8, sticky="ew")
         folder_frame.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(folder_frame, text="Zielordner", font=bold13).grid(
@@ -181,7 +190,7 @@ class TTSStudio(ctk.CTk):
             row=1, column=1, padx=(0, 12), pady=(4, 12))
 
         # Karte: Aktionen
-        act_frame = ctk.CTkFrame(c)
+        act_frame = ctk.CTkFrame(c, fg_color=CARD_BG)
         act_frame.grid(row=3, column=0, padx=20, pady=8, sticky="ew")
         ctk.CTkLabel(act_frame, text="Aktionen", font=bold13).grid(
             row=0, column=0, columnspan=3, padx=12, pady=(8, 2), sticky="w")
@@ -198,7 +207,7 @@ class TTSStudio(ctk.CTk):
                       command=self.reset_review).pack(side="left", padx=(10, 0))
 
         # Karte: Protokoll (resizable, wie das Log in Converter.py)
-        log_card = ctk.CTkFrame(c)
+        log_card = ctk.CTkFrame(c, fg_color=CARD_BG)
         log_card.grid(row=4, column=0, padx=20, pady=8, sticky="ew")
         log_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(log_card, text="Protokoll", font=bold14).grid(
