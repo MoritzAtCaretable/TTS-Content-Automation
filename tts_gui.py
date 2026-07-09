@@ -59,7 +59,7 @@ GREY_HOVER = ("gray65", "gray40")
 # Converter-Hintergrund ab, ohne im Einzelnen zu stören.
 APP_BG = ("#eef4ef", "#1c2320")
 # Karten liegen als leicht abgesetzte Flächen auf dem grünen Grund.
-CARD_BG = ("#f7faf8", "#242b28")
+CARD_BG = ("#92bba0", "#242b28")
 
 
 def sheet_url() -> str:
