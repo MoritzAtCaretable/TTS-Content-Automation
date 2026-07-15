@@ -63,14 +63,31 @@ if [ ! -d ".git" ]; then
 fi
 
 # 3. venv + Pakete
+# Ein venv ist an seinen absoluten Pfad gebunden. Wurde der Ordner verschoben
+# (z. B. von Desktop nach Hilfsprogramme), zeigt das venv ins Leere und muss neu
+# gebaut werden. Wir erkennen das und legen es bei Bedarf neu an.
+VENV_DIR="$(pwd)/venv"
+venv_stale=0
+if [ -d "venv" ]; then
+    if [ -f "venv/pyvenv.cfg" ] && grep -q "$VENV_DIR" "venv/pyvenv.cfg" 2>/dev/null; then
+        : # venv passt zum aktuellen Pfad
+    elif [ -x "venv/bin/python" ] && venv/bin/python -c '' 2>/dev/null; then
+        : # venv funktioniert
+    else
+        echo "→ Vorhandenes venv passt nicht zu diesem Ordner (verschoben?) — wird neu gebaut…"
+        rm -rf venv
+        venv_stale=1
+    fi
+fi
 if [ ! -d "venv" ]; then
     echo "→ Virtuelle Umgebung anlegen…"
     python3 -m venv venv
 fi
 echo "→ Pakete installieren (PyTorch/Whisper ~2GB, kann dauern)…"
-source venv/bin/activate
-pip install --upgrade pip >/dev/null
-pip install -r requirements.txt
+# Direkt das venv-Python nutzen statt 'pip' aus dem PATH — robust gegen ein
+# fehlendes oder verschobenes venv.
+venv/bin/python -m pip install --upgrade pip >/dev/null
+venv/bin/python -m pip install -r requirements.txt
 
 # 4. .env vorbereiten
 if [ ! -f ".env" ] && [ -f ".env.example" ]; then
@@ -80,7 +97,7 @@ fi
 
 # 5. App bauen
 echo "→ 'TTS Studio.app' bauen…"
-python fix_app.py
+venv/bin/python fix_app.py
 
 echo ""
 echo "════════════════════════════════════════"
