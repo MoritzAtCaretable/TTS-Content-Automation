@@ -150,6 +150,7 @@ class TTSStudio(ctk.CTk):
         self.rows_loaded = False
         self._loading_rows = False
         self._pending_rows = None
+        self._adding_rows = False
 
         # resizable-panel state (wie Converter.py — hier nur das Log-Panel)
         self._default_heights = {"rows": 200, "log": 260}
@@ -323,9 +324,48 @@ class TTSStudio(ctk.CTk):
             row=3, column=0, padx=12, pady=(3, 10), sticky="ew")
         self._render_rows()
 
+        # Karte: Neue Texte — Zeilen direkt aus der App ans Sheet anfügen
+        add_card = ctk.CTkFrame(c, fg_color=CARD_BG)
+        add_card.grid(row=4, column=0, padx=20, pady=8, sticky="ew")
+        add_card.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(add_card, text="Neue Texte", font=bold13).grid(
+            row=0, column=0, columnspan=4, padx=12, pady=(8, 2), sticky="w")
+
+        ctk.CTkLabel(add_card, text="ID-Präfix:",
+                     font=ctk.CTkFont(size=11)).grid(
+            row=1, column=0, padx=(12, 6), pady=(2, 6), sticky="w")
+        self.prefix_var = ctk.StringVar()
+        ctk.CTkEntry(add_card, textvariable=self.prefix_var, width=190,
+                     placeholder_text="z.B. Buchstaben").grid(
+            row=1, column=1, pady=(2, 6), sticky="w")
+        ctk.CTkLabel(add_card, text="Modus:",
+                     font=ctk.CTkFont(size=11)).grid(
+            row=1, column=2, padx=(16, 6), pady=(2, 6), sticky="e")
+        self.newmode_var = ctk.StringVar(value="Einzelwort")
+        ctk.CTkOptionMenu(
+            add_card, values=["Einzelwort", "Normal"], variable=self.newmode_var,
+            width=140, fg_color=PETROL, button_color=PETROL_HOVER,
+            button_hover_color=PETROL, dropdown_hover_color=PETROL).grid(
+            row=1, column=3, padx=(0, 12), pady=(2, 6), sticky="w")
+
+        self.new_text = ctk.CTkTextbox(add_card, height=92)
+        self.new_text.grid(row=2, column=0, columnspan=4, padx=12,
+                           pady=(2, 4), sticky="ew")
+
+        ctk.CTkLabel(
+            add_card, justify="left", text_color=MUTED_COLOR,
+            font=ctk.CTkFont(size=11),
+            text=("Eine Zeile = ein Text, Status „todo“. Die Nummern laufen "
+                  "automatisch weiter.\nEigene ID je Zeile:  ID | Text")).grid(
+            row=3, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="w")
+        self.add_btn = ctk.CTkButton(
+            add_card, text="＋  Ins Sheet einfügen", width=190,
+            fg_color=PETROL, hover_color=PETROL_HOVER, command=self.add_rows)
+        self.add_btn.grid(row=3, column=3, padx=(0, 12), pady=(0, 10), sticky="e")
+
         # Karte: Aktionen
         act_frame = ctk.CTkFrame(c, fg_color=CARD_BG)
-        act_frame.grid(row=4, column=0, padx=20, pady=8, sticky="ew")
+        act_frame.grid(row=5, column=0, padx=20, pady=8, sticky="ew")
         ctk.CTkLabel(act_frame, text="Aktionen", font=bold13).grid(
             row=0, column=0, columnspan=3, padx=12, pady=(8, 2), sticky="w")
         arow = ctk.CTkFrame(act_frame, fg_color="transparent")
@@ -342,7 +382,7 @@ class TTSStudio(ctk.CTk):
 
         # Karte: Protokoll (resizable, wie das Log in Converter.py)
         log_card = ctk.CTkFrame(c, fg_color=CARD_BG)
-        log_card.grid(row=5, column=0, padx=20, pady=8, sticky="ew")
+        log_card.grid(row=6, column=0, padx=20, pady=8, sticky="ew")
         log_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(log_card, text="Protokoll", font=bold14).grid(
             row=0, column=0, padx=12, pady=(10, 2), sticky="w")
@@ -629,8 +669,112 @@ class TTSStudio(ctk.CTk):
     def _set_table_enabled(self, on: bool):
         """Sperrt die Auswahl während eines Laufs (Klicks prüft _on_table_click)."""
         state = "normal" if on else "disabled"
-        for b in [self.reload_btn] + self.sel_buttons:
+        for b in [self.reload_btn, self.add_btn] + self.sel_buttons:
             b.configure(state=state)
+
+    # -- Neue Texte ins Sheet ---------------------------------------------
+
+    def _collect_new_entries(self) -> list:
+        """Liest das Eingabefeld und baut daraus die neuen Sheet-Zeilen.
+
+        Eine Zeile = ein Text. Enthält eine Zeile "ID | Text", gilt diese ID;
+        sonst wird aus dem Präfix fortlaufend numeriert.
+        Wirft ValueError mit einer für die Anzeige gedachten Meldung.
+        """
+        roh = self.new_text.get("1.0", "end").strip()
+        if not roh:
+            raise ValueError("Kein Text eingegeben.\n\nEine Zeile pro Text.")
+        zeilen = [z.strip() for z in roh.splitlines() if z.strip()]
+        modus = self.newmode_var.get()
+        prefix = self.prefix_var.get().strip()
+
+        explizit, auto = [], []
+        for i, z in enumerate(zeilen):
+            if "|" in z:
+                eid, _, txt = z.partition("|")
+                eid, txt = eid.strip(), txt.strip()
+                if not eid or not txt:
+                    raise ValueError(f"Zeile {i + 1} passt nicht zum Format "
+                                     f"„ID | Text“:\n\n{z}")
+                explizit.append((i, eid, txt))
+            else:
+                auto.append((i, z))
+
+        if auto and not prefix:
+            raise ValueError(
+                "Für die automatischen IDs fehlt der ID-Präfix.\n\n"
+                "Entweder oben einen Präfix eintragen (z.B. „Buchstaben“) — "
+                "oder je Zeile „ID | Text“ schreiben.")
+        if auto and not self.sheet_rows:
+            raise ValueError(
+                "Die Sheet-Zeilen sind noch nicht geladen — ohne sie ist die "
+                "nächste freie Nummer unbekannt.\n\nBitte „⟳ Neu laden“ drücken.")
+
+        neue_ids = pipeline.next_ids(prefix, len(auto), self.sheet_rows) if auto else []
+        eintraege = [None] * len(zeilen)
+        for i, eid, txt in explizit:
+            eintraege[i] = {"id": eid, "text": txt, "mode": modus, "status": "todo"}
+        for (i, txt), eid in zip(auto, neue_ids):
+            eintraege[i] = {"id": eid, "text": txt, "mode": modus, "status": "todo"}
+        return eintraege
+
+    def add_rows(self):
+        """Fügt die eingegebenen Texte unten ans Google Sheet an."""
+        if self.running:
+            messagebox.showinfo("Neue Texte",
+                                "Bitte warten, bis der aktuelle Lauf beendet ist.")
+            return
+        if self._adding_rows:
+            return
+        try:
+            eintraege = self._collect_new_entries()
+        except ValueError as e:
+            messagebox.showwarning("Neue Texte", str(e))
+            return
+        except Exception as e:
+            messagebox.showerror("Neue Texte", f"Eingabe unlesbar:\n{e}")
+            return
+
+        # Schreiben ins gemeinsame Sheet — vorher zeigen, was genau passiert.
+        vorschau = "\n".join(f"   {e['id']}   →   {_shorten(e['text'], 38)}"
+                             for e in eintraege[:8])
+        if len(eintraege) > 8:
+            vorschau += f"\n   … und {len(eintraege) - 8} weitere"
+        if not messagebox.askyesno(
+                "Ins Sheet einfügen",
+                f"{len(eintraege)} neue Zeile(n) unten anfügen?\n\n{vorschau}\n\n"
+                f"Modus: {self.newmode_var.get()}   ·   Status: todo"):
+            return
+
+        self._adding_rows = True
+        self.add_btn.configure(state="disabled", text="Füge ein…")
+        threading.Thread(target=self._add_worker, args=(eintraege,),
+                         daemon=True).start()
+
+    def _add_worker(self, eintraege):
+        try:
+            erste, anzahl = pipeline.append_rows(eintraege)
+        except Exception as e:
+            self.after(0, self._add_failed, e)
+            return
+        self.after(0, self._add_done, erste, anzahl)
+
+    def _add_failed(self, err):
+        self._adding_rows = False
+        self.add_btn.configure(state="normal", text="＋  Ins Sheet einfügen")
+        self._append_log(f"⚠ Einfügen fehlgeschlagen: {err}\n")
+        messagebox.showerror("Neue Texte", f"Konnte nicht einfügen:\n\n{err}")
+
+    def _add_done(self, erste, anzahl):
+        self._adding_rows = False
+        self.add_btn.configure(state="normal", text="＋  Ins Sheet einfügen")
+        self.new_text.delete("1.0", "end")
+        self._append_log(f"➕ {anzahl} Zeile(n) ins Sheet eingefügt "
+                         f"(ab Zeile {erste}).\n")
+        self.status.configure(text=f"{anzahl} Zeile(n) eingefügt.")
+        # Neu geladen erscheinen sie in der Tabelle — mit Status todo und
+        # damit automatisch angehakt.
+        self.load_sheet_rows(auto=True)
 
     # -- Lauf --------------------------------------------------------------
 

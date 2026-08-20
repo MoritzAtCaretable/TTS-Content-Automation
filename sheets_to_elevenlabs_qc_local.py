@@ -346,6 +346,85 @@ def load_rows():
     return records
 
 
+def next_ids(prefix: str, count: int, records: list) -> list:
+    """Erzeugt fortlaufende IDs zu einem Präfix, anschließend an die höchste
+    bereits vorhandene Nummer.
+
+    Trennzeichen und Ziffernbreite werden von den vorhandenen IDs übernommen,
+    damit neue Einträge zum bestehenden Schema passen:
+      "Buchstaben_001", …   → "Buchstaben_185"
+      "Request_Artem01", …  → "Request_Artem04"
+    Gibt es das Präfix noch nicht, wird "_" und dreistellig verwendet.
+    """
+    prefix = prefix.strip()
+    if not prefix:
+        raise ValueError("Kein ID-Präfix angegeben.")
+    muster = re.compile(rf"^{re.escape(prefix)}([_-]?)(\d+)$", re.IGNORECASE)
+    hoechste, sep, pad = 0, "_", 3
+    treffer = False
+    for r in records:
+        m = muster.match((r.get("id", "") or "").strip())
+        if not m:
+            continue
+        treffer = True
+        nummer = int(m.group(2))
+        if nummer >= hoechste:
+            hoechste, sep, pad = nummer, m.group(1), len(m.group(2))
+    if not treffer:
+        hoechste, sep, pad = 0, "_", 3
+    return [f"{prefix}{sep}{str(hoechste + i).zfill(pad)}"
+            for i in range(1, count + 1)]
+
+
+def append_rows(entries: list):
+    """Hängt neue Zeilen unten an das Sheet an.
+
+    entries: Liste von Dicts {spaltenname: wert}, z.B.
+             {"id": "Buchstaben_185", "text": "Zebra", "mode": "Einzelwort",
+              "status": "todo"}
+    Spalten, die es im Sheet nicht gibt, werden ignoriert; 'filename' bleibt
+    bewusst leer, den baut die Pipeline beim Generieren selbst.
+
+    Prüft vorher gegen den aktuellen Sheet-Stand auf doppelte IDs — die ID ist
+    der stabile Schlüssel eines Eintrags und darf sich nicht wiederholen.
+    Returns (erste_neue_zeilennummer, anzahl).
+    """
+    if not entries:
+        return (None, 0)
+    ws, header_map, records = open_sheet()
+    if not header_map:
+        raise RuntimeError("Das Sheet hat keine Kopfzeile — kann nichts anfügen.")
+
+    vorhanden = {(r.get("id", "") or "").strip().lower()
+                 for r in records if (r.get("id", "") or "").strip()}
+    neu_ids, doppelt = set(), []
+    for e in entries:
+        eid = (e.get("id", "") or "").strip().lower()
+        if not eid:
+            continue
+        if eid in vorhanden or eid in neu_ids:
+            doppelt.append(e.get("id", ""))
+        neu_ids.add(eid)
+    if doppelt:
+        raise ValueError("Diese ID(s) gibt es schon: " + ", ".join(doppelt))
+
+    breite = max(header_map.values())
+    zeilen = []
+    for e in entries:
+        zeile = [""] * breite
+        for feld, wert in e.items():
+            col = header_map.get(feld.strip().lower())
+            if col:
+                zeile[col - 1] = str(wert)
+        zeilen.append(zeile)
+
+    # value_input_option="RAW": Texte bleiben Text — Sheets soll aus "1/2" kein
+    # Datum und aus "=x" keine Formel machen.
+    ws.append_rows(zeilen, value_input_option="RAW")
+    erste = len(records) + 2          # +1 Kopfzeile, +1 = erste neue Zeile
+    return (erste, len(zeilen))
+
+
 # ─────────────────────────────────────────────
 # ELEVENLABS + AUDIO
 # ─────────────────────────────────────────────

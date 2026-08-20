@@ -80,7 +80,8 @@ schließen, ein **neues** öffnen und `install.bat` erneut ausführen (damit sie
   Rechtsklick → „Senden an" → „Desktop (Verknüpfung erstellen)".
 
 In der App: Modell wählen, Zielordner wählen, in **Sheet-Zeilen** anhaken was
-verarbeitet werden soll, dann **Generierung starten**.
+verarbeitet werden soll, dann **Generierung starten**. Neue Texte lassen sich
+unter **Neue Texte** direkt anlegen.
 Über die Buttons kommst du zum Google Sheet und zur Review-Seite.
 
 ### Sheet-Zeilen (Auswahl in der App)
@@ -99,6 +100,23 @@ Wichtig: Eine Auswahl in der Tabelle **gilt genau so** — auch für Zeilen, die
 `passed` sind. So lässt sich eine fertige Zeile neu generieren, ohne im Sheet den
 Status zu ändern. Ist die Tabelle leer (z.B. kein Sheet-Zugriff), verhält sich der
 Start wie früher und nimmt alle offenen Zeilen nach Status-Filter.
+
+### Neue Texte (anlegen in der App)
+
+Die Karte **Neue Texte** hängt neue Zeilen unten ans Sheet an — ohne das Sheet zu
+öffnen. **Eine Zeile im Eingabefeld = ein Text.**
+
+- **ID-Präfix** (z.B. `Buchstaben`): die Nummern laufen automatisch weiter und
+  übernehmen das vorhandene Schema — aus `Buchstaben_161` wird `Buchstaben_162`,
+  aus `Request_Artem03` wird `Request_Artem04`. Ein neues Präfix startet bei `_001`.
+- **Eigene ID** je Zeile: `meine_id | Mein Text` (dann braucht es keinen Präfix).
+  Beides lässt sich mischen.
+- **Modus** gilt für alle Zeilen des Einfügevorgangs.
+- Neue Zeilen bekommen **Status `todo`**, `filename` bleibt leer (den baut die
+  Pipeline beim Generieren). Vor dem Schreiben zeigt ein Dialog, was genau angefügt wird.
+- Doppelte IDs werden **vor** dem Schreiben abgelehnt — die ID ist der stabile
+  Schlüssel eines Eintrags.
+- Danach lädt die Tabelle neu; die neuen Zeilen sind `todo` und damit gleich angehakt.
 
 ---
 
