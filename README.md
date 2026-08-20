@@ -79,14 +79,33 @@ schließen, ein **neues** öffnen und `install.bat` erneut ausführen (damit sie
 - **Windows:** `TTS_Studio.bat` doppelklicken. Für eine Desktop-Verknüpfung:
   Rechtsklick → „Senden an" → „Desktop (Verknüpfung erstellen)".
 
-In der App: Modell wählen, Zielordner wählen, **Generierung starten**.
+In der App: Modell wählen, Zielordner wählen, in **Sheet-Zeilen** anhaken was
+verarbeitet werden soll, dann **Generierung starten**.
 Über die Buttons kommst du zum Google Sheet und zur Review-Seite.
+
+### Sheet-Zeilen (Auswahl in der App)
+
+Die Karte **Sheet-Zeilen** zeigt den Inhalt des Google Sheets direkt in der App —
+Zeilennummer, ID, Text, Modus und Status (farbig). Damit muss man das Sheet nicht
+mehr öffnen, um zu sehen oder zu bestimmen, was generiert wird.
+
+- **Klick auf eine Zeile** setzt/entfernt den Haken.
+- **Nur offene** — Zeilen mit `todo`, `regenerate` oder leerem Status.
+- **Nur Review** — alle Zeilen mit `review needed` (die üblichen Nachzügler).
+- **Alle** / **Keine** — Komplettauswahl.
+- **⟳ Neu laden** holt den aktuellen Sheet-Stand; nach jedem Lauf passiert das automatisch.
+
+Wichtig: Eine Auswahl in der Tabelle **gilt genau so** — auch für Zeilen, die schon
+`passed` sind. So lässt sich eine fertige Zeile neu generieren, ohne im Sheet den
+Status zu ändern. Ist die Tabelle leer (z.B. kein Sheet-Zugriff), verhält sich der
+Start wie früher und nimmt alle offenen Zeilen nach Status-Filter.
 
 ---
 
 ## Bedienung des Sheets
 
-- Zeilen mit Status **`todo`** oder **`regenerate`** werden verarbeitet.
+- Zeilen mit Status **`todo`** oder **`regenerate`** werden verarbeitet — sofern in
+  der App keine ausdrückliche Zeilen-Auswahl getroffen wurde (siehe oben).
 - Modus **`Einzelwort`** = einzelnes Wort (mit Trimming), **`Normal`** = Satz/Phrase.
 - Nach dem Lauf schreibt das Skript **`passed`** oder **`review needed`** samt Grund
   und Zeitstempel zurück.

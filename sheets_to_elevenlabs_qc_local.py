@@ -72,6 +72,13 @@ SHEET_NAME = os.getenv("SHEET_NAME", "Tabellenblatt1")
 PROCESS_STATUSES = {"todo", "regenerate"}
 TREAT_EMPTY_STATUS_AS_TODO = True   # leere Status-Zelle wie "todo" behandeln
 
+# Optionale Einschränkung auf bestimmte Sheet-Zeilen (Zeilennummern wie im Sheet).
+# Wird von der GUI gesetzt, wenn dort Zeilen manuell ausgewählt wurden. Eine
+# solche Auswahl übergeht den Status-Filter bewusst — so lässt sich eine bereits
+# fertige Zeile erneut generieren, ohne im Sheet den Status zu ändern.
+# None/leer = normales Verhalten (alle Zeilen nach Status-Filter).
+ONLY_ROWS = None
+
 # ElevenLabs — Keys/Voice kommen aus der .env (siehe .env.example)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "iMHt6G42evkXunaDU065")
@@ -321,6 +328,22 @@ def should_process(status: str) -> bool:
     if not s:
         return TREAT_EMPTY_STATUS_AS_TODO
     return s in PROCESS_STATUSES
+
+
+def load_rows():
+    """Liest alle Sheet-Zeilen — für die Auswahl-Tabelle in der GUI.
+
+    Anders als main() wird hier nichts verarbeitet und nichts geschrieben:
+    nur lesen, damit die GUI anzeigen kann, was im Sheet steht.
+
+    Returns eine Liste von Dicts mit den Spalten der Kopfzeile plus:
+      _row   Zeilennummer im Sheet (wie in der Tabelle sichtbar)
+      _open  True, wenn der Status diese Zeile normalerweise verarbeiten würde
+    """
+    _ws, _header_map, records = open_sheet()
+    for r in records:
+        r["_open"] = should_process(r.get("status", ""))
+    return records
 
 
 # ─────────────────────────────────────────────
@@ -1098,7 +1121,7 @@ def reset_review(output_file=REVIEW_HTML):
     generate_review_html(output_file)
 
 
-def main():
+def main(only_rows=None):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(REVIEW_DIR, exist_ok=True)
 
@@ -1134,8 +1157,27 @@ def main():
         if col not in header_map:
             print(f"   ⚠ Warnung: Spalte '{col}' fehlt in der Kopfzeile.")
 
-    to_process = [r for r in records if should_process(r.get("status", ""))]
-    print(f"   {len(records)} Zeilen gesamt, {len(to_process)} zu verarbeiten.\n")
+    # Wurde in der GUI eine konkrete Auswahl getroffen, gilt genau die —
+    # unabhängig vom Status. Sonst wie gehabt der Status-Filter.
+    if only_rows is None:
+        only_rows = ONLY_ROWS
+    if only_rows:
+        wanted = {int(n) for n in only_rows}
+        to_process = [r for r in records if r["_row"] in wanted]
+        print(f"   {len(records)} Zeilen gesamt, {len(to_process)} ausgewählt "
+              f"(Auswahl aus der App).")
+        fehlend = wanted - {r["_row"] for r in records}
+        if fehlend:
+            print(f"   ⚠ Nicht mehr im Sheet gefunden: Zeile(n) "
+                  f"{', '.join(str(n) for n in sorted(fehlend))}")
+        print()
+    else:
+        to_process = [r for r in records if should_process(r.get("status", ""))]
+        print(f"   {len(records)} Zeilen gesamt, {len(to_process)} zu verarbeiten.\n")
+
+    if not to_process:
+        print("   Nichts zu tun — keine passende Zeile gefunden.")
+        return
 
     usage_start = get_elevenlabs_character_count()
     counts = {"passed": 0, "review": 0, "failed": 0, "skipped": 0}
