@@ -194,6 +194,32 @@ Unter Windows entsprechend `venv\Scripts\python -m unittest discover -s tests -v
 Ein Qualitätsvorteil von Gemini 3.8 gegenüber früheren Modellen muss anhand
 bewerteter Hörbeispiele geprüft werden; die Modellumstellung allein garantiert ihn nicht.
 
+### Schnitt und sicherer Export
+
+Einzelwörter werden mit dem ElevenLabs-Endpunkt `with-timestamps` erzeugt. Die
+Zeichen-Zeitstempel müssen Einleitung und Zieltext eindeutig abbilden. Geschnitten
+wird mit Sicherheitsabstand an ruhigen Signalgrenzen. Leise Auslaute können die
+Endgrenze nach außen verschieben. Fehlen passende Zeitstempel oder sichere Grenzen,
+bleibt das Original für Review erhalten. Eleven v3 erhält keine SSML-Pausentags.
+
+Der Export erzeugt zunächst eine temporäre Datei. Bei aktiviertem Postprocessing
+werden Randstille und Schutzpausen angepasst, Fades nur innerhalb dieser Pausen
+angewandt und die Lautheit in zwei Durchläufen normalisiert. Anschließend prüft
+ffprobe Codec, Container, Mono und Samplerate; FFmpeg dekodiert die gesamte Datei.
+Die fertige Datei muss das True-Peak-Limit und das Lautheitsziel innerhalb von
+±2 LU einhalten. Nicht messbare Lautheit und Encoderfehler führen zu Review,
+statt still auf einen unnormalisierten Export auszuweichen. Auch bei deaktiviertem
+Postprocessing bleibt die Format- und Dekodierprüfung aktiv.
+
+Nur ein vollständig bestandener Versuch ersetzt die Zieldatei atomar. Fehlversuche
+überschreiben keine bestehende Freigabe. Die Review-Seite spielt den tatsächlich
+zugehörigen Versuch ab; eine alte Datei wird nicht als neue Aufnahme ausgegeben.
+Rohdateien, Zwischenstände, Alignment und `attempts.json` bleiben im Unterordner
+`.sources` des Zielordners erhalten. Dadurch steigt der Speicherbedarf; der Ordner
+kann nach Abschluss der Reviews bewusst archiviert oder gelöscht werden.
+Eigene Dateinamen müssen einfache Basenamen sein; Pfade und doppelte Dateinamen
+im Sheet werden vor kostenpflichtigen Aufrufen abgewiesen.
+
 ---
 
 ## Updates

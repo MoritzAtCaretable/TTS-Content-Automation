@@ -34,6 +34,9 @@ import time
 import random
 import shutil
 import subprocess
+import base64
+import tempfile
+from pathlib import Path
 import requests
 from datetime import datetime
 import gspread
@@ -48,6 +51,7 @@ from tts_quality import (
     NATURALNESS_SCHEMA, NATURALNESS_SYSTEM_PROMPT, GEMINI_PROMPT_VERSION,
     SCORE_BY_SEVERITY, naturalness_prompt, parse_naturalness,
 )
+from tts_audio import AudioProcessingError, trim_aligned_word, export_audio, safe_filename, silence_threshold
 
 # .env laden (falls python-dotenv installiert ist). Ohne .env greift os.getenv auf
 # echte Umgebungsvariablen zurück – der Rest funktioniert weiterhin.
@@ -112,7 +116,6 @@ APPEND_PUNCTUATION = True     # Punkt anhängen (Nicht-Wort-Modus), gegen abrupt
 # Einzelwort-Modus (aktiviert pro Zeile über die Spalte "mode" = "Einzelwort")
 SINGLE_WORD_LEAD_IN = "Das Wort heißt:"
 SINGLE_WORD_BREAK = "0.6s"
-SINGLE_WORD_TRAILING = ".."
 TRIM_BREAK_MIN_MS = 400       # Ab welcher Pausenlänge die Wortgrenze erkannt wird
 TRIM_PAD_START_MS = 80        # Puffer vor dem Wort
 TRIM_PAD_END_MS = 180         # Puffer nach dem Wort (großzügiger: leise Endungen schützen)
@@ -227,6 +230,9 @@ if FFMPEG_BIN:
     _ffprobe = FFMPEG_BIN.replace("ffmpeg", "ffprobe")
     if os.path.exists(_ffprobe):
         AudioSegment.ffprobe = _ffprobe
+    # Whisper and pydub's probe lookup also use PATH internally.
+    os.environ["PATH"] = os.path.dirname(FFMPEG_BIN) + os.pathsep + os.environ.get("PATH", "")
+FFPROBE_BIN = shutil.which("ffprobe")
 
 
 def short_slug(text: str, max_words: int = 4, max_len: int = 40) -> str:
@@ -254,11 +260,11 @@ def build_filename(row: dict) -> str:
             if base.lower().endswith(known):
                 base = base[: -len(known)]
                 break
-        return base + ext
+        return safe_filename(base + ext)
     num = str(row["_row"]).zfill(3)
     content_id = re.sub(r"[^\w\-]", "", row.get("id", "").strip()) or "item"
     slug = short_slug(row.get("text", ""))
-    return f"{num}_{content_id}_{slug}{ext}"
+    return safe_filename(f"{num}_{content_id}_{slug}{ext}")
 
 
 # ─────────────────────────────────────────────
@@ -445,7 +451,8 @@ def text_to_speech(text: str, output_path: str, seed: int = None,
     global _elevenlabs_pcm_failed
 
     if single_word_mode:
-        tts_text = f'{SINGLE_WORD_LEAD_IN} <break time="{SINGLE_WORD_BREAK}" /> {text}{SINGLE_WORD_TRAILING}'
+        pause = "..." if ELEVENLABS_MODEL == "eleven_v3" else f'<break time="{SINGLE_WORD_BREAK}" />'
+        tts_text = f'{SINGLE_WORD_LEAD_IN} {pause} {text}.'
     else:
         tts_text = text
         if APPEND_PUNCTUATION and tts_text and tts_text[-1] not in ".!?,;:":
@@ -454,8 +461,10 @@ def text_to_speech(text: str, output_path: str, seed: int = None,
     payload = {
         "text": tts_text,
         "model_id": ELEVENLABS_MODEL,
-        "voice_settings": VOICE_SETTINGS,
+        "voice_settings": dict(VOICE_SETTINGS),
     }
+    if ELEVENLABS_MODEL == "eleven_v3":
+        payload["voice_settings"].pop("use_speaker_boost", None)
     if ELEVENLABS_LANGUAGE_CODE:
         payload["language_code"] = ELEVENLABS_LANGUAGE_CODE
     if seed is not None:
@@ -464,69 +473,71 @@ def text_to_speech(text: str, output_path: str, seed: int = None,
 
     use_pcm = ELEVENLABS_OUTPUT_FORMAT.startswith("pcm_") and not _elevenlabs_pcm_failed
     fmt = ELEVENLABS_OUTPUT_FORMAT if use_pcm else "mp3_44100_128"
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}?output_format={fmt}"
+    endpoint = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}" + ("/with-timestamps" if single_word_mode else "")
+    url = f"{endpoint}?output_format={fmt}"
 
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=payload, timeout=(15, 120))
 
     # PCM vom Plan nicht erlaubt o.ä. → einmalig auf MP3 zurückfallen und erneut
     if response.status_code != 200 and use_pcm:
         err = response.text[:300]
-        if "output_format" in err or "pcm" in err.lower() or response.status_code in (400, 403):
+        if response.status_code in (400, 403) and ("output_format" in err or "pcm" in err.lower()):
             print(f"      ⚠ PCM-Format abgelehnt ({response.status_code}) — falle für diesen Lauf auf MP3 zurück.")
             _elevenlabs_pcm_failed = True
-            url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}?output_format=mp3_44100_128"
-            response = requests.post(url, headers=headers, json=payload)
+            url = f"{endpoint}?output_format=mp3_44100_128"
+            response = requests.post(url, headers=headers, json=payload, timeout=(15, 120))
             use_pcm = False
 
     if response.status_code != 200:
-        print(f"      ✗ ElevenLabs error {response.status_code}: {response.text[:200]}")
-        return ""
+        raise AudioProcessingError(f"ElevenLabs error {response.status_code}: {response.text[:200]}")
 
+    metadata = None
+    if single_word_mode:
+        try:
+            data = response.json()
+            audio_bytes = base64.b64decode(data["audio_base64"], validate=True)
+            metadata = {"target": text, "lead_in": SINGLE_WORD_LEAD_IN, "model": ELEVENLABS_MODEL,
+                        "alignment": data.get("alignment"), "normalized_alignment": data.get("normalized_alignment")}
+        except (ValueError, KeyError, TypeError) as e:
+            raise AudioProcessingError("ElevenLabs lieferte keine gültige Audio-/Zeitstempelantwort") from e
+    else:
+        audio_bytes = response.content
+    if not audio_bytes or (use_pcm and len(audio_bytes) % 2):
+        raise AudioProcessingError("ElevenLabs lieferte leere oder unvollständige Audiodaten")
     base, _ = os.path.splitext(output_path)
     if use_pcm:
         # Rohe PCM-Bytes (16-bit mono) in einen WAV-Container packen
         rate = _pcm_rate(fmt) or 24000
-        audio = AudioSegment(data=response.content, sample_width=2, frame_rate=rate, channels=1)
+        audio = AudioSegment(data=audio_bytes, sample_width=2, frame_rate=rate, channels=1)
         actual_path = base + ".wav"
-        audio.export(actual_path, format="wav")
+        audio.export(actual_path, format="wav").close()
     else:
         actual_path = base + ".mp3"
         with open(actual_path, "wb") as f:
-            f.write(response.content)
+            f.write(audio_bytes)
+    if metadata is not None:
+        with open(actual_path + ".alignment.json", "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
     return actual_path
 
 
-def _edge_silence_thresh(audio: AudioSegment) -> float:
-    """
-    Relative Stille-Schwelle für Rand-Trimmen: nur was DEUTLICH unter dem
-    Durchschnittspegel liegt, gilt als Stille. Echte TTS-Stille liegt < -60dB,
-    leise Wortenden bei ca. -35 bis -48dB — die Schwelle -50 trennt beides sicher.
-    """
-    if audio.dBFS == float("-inf"):
-        return -70.0
-    return min(-50.0, audio.dBFS - 30.0)
-
-
-def trim_to_word(input_path: str, output_path: str) -> bool:
-    """
-    Schneidet im Einzelwort-Modus die Einleitung weg und behält nur das Wort.
-    Schreibt IMMER in eine separate Zieldatei (input bleibt unberührt).
-    """
-    audio = AudioSegment.from_file(input_path)
-    nonsilent = detect_nonsilent(audio, min_silence_len=200, silence_thresh=SILENCE_THRESHOLD_DB)
-    if not nonsilent:
-        audio.export(output_path, format="wav")
-        return False
-    word_start = nonsilent[0][0]
-    for idx in range(1, len(nonsilent)):
-        gap = nonsilent[idx][0] - nonsilent[idx - 1][1]
-        if gap >= TRIM_BREAK_MIN_MS:
-            word_start = nonsilent[idx][0]
-    word_end = nonsilent[-1][1]
-    start = max(0, word_start - TRIM_PAD_START_MS)
-    end = min(len(audio), word_end + TRIM_PAD_END_MS)
-    audio[start:end].export(output_path, format="wav")
-    return True
+def trim_to_word(input_path: str, output_path: str):
+    """Cut only with valid provider alignment; keep original on ambiguity."""
+    try:
+        with open(input_path + ".alignment.json", encoding="utf-8") as f:
+            metadata = json.load(f)
+    except (OSError, ValueError) as e:
+        raise AudioProcessingError("Keine lesbaren Wortzeitstempel; Original bleibt erhalten") from e
+    errors = []
+    for name in ("normalized_alignment", "alignment"):
+        if metadata.get(name) is None:
+            continue
+        try:
+            return trim_aligned_word(input_path, output_path, metadata["target"], metadata["lead_in"],
+                                     metadata[name], TRIM_PAD_START_MS, TRIM_PAD_END_MS)
+        except AudioProcessingError as e:
+            errors.append(str(e))
+    raise AudioProcessingError(" / ".join(errors) or "Keine Wortzeitstempel; Original bleibt erhalten")
 
 
 def single_word_sanity_check(audio_path: str):
@@ -547,7 +558,7 @@ def single_word_sanity_check(audio_path: str):
 
     # Nach dem Trimmen sollte nur noch EIN zusammenhängendes Sprach-Segment übrig sein.
     # Eine weitere lange Lücke deutet auf einen Rest der Einleitung hin.
-    nonsilent = detect_nonsilent(audio, min_silence_len=200, silence_thresh=SILENCE_THRESHOLD_DB)
+    nonsilent = detect_nonsilent(audio, min_silence_len=200, silence_thresh=silence_threshold(audio))
     for idx in range(1, len(nonsilent)):
         gap = nonsilent[idx][0] - nonsilent[idx - 1][1]
         if gap >= TRIM_BREAK_MIN_MS:
@@ -556,69 +567,16 @@ def single_word_sanity_check(audio_path: str):
     return True, "ok"
 
 
-def postprocess_audio(input_path: str, output_path: str) -> bool:
-    """
-    Postprocessing-Stufe: Stille an Anfang/Ende schonend trimmen, kurze Fades,
-    Loudness-Normalisierung (EBU R128) und Export ins Zielformat (Opus/MP3).
-
-    Schutzmechanismen gegen zu aggressives Schneiden:
-    - Relative Stille-Schwelle (deutlich unter Durchschnittspegel) statt fixer -40dB,
-      damit leise Wortenden nicht als Stille gewertet werden
-    - Nur zusammenhängende Stille >= EDGE_MIN_SILENCE_MS gilt als Rand-Stille
-    - Großzügiges Keep am Ende (EDGE_KEEP_END_MS)
-    - Harte Obergrenze EDGE_TRIM_MAX_MS pro Rand — mehr wird nie weggeschnitten
-    """
-    audio = AudioSegment.from_file(input_path)
-    original_len = len(audio)
-
-    # 1. Rand-Stille schonend entfernen
-    thresh = _edge_silence_thresh(audio)
-    nonsilent = detect_nonsilent(audio, min_silence_len=EDGE_MIN_SILENCE_MS, silence_thresh=thresh)
-    if nonsilent:
-        start = max(0, nonsilent[0][0] - EDGE_KEEP_START_MS)
-        end = min(original_len, nonsilent[-1][1] + EDGE_KEEP_END_MS)
-        # Sicherung: nie mehr als EDGE_TRIM_MAX_MS pro Rand abschneiden
-        start = min(start, EDGE_TRIM_MAX_MS)
-        end = max(end, original_len - EDGE_TRIM_MAX_MS)
-        if start < end:
-            audio = audio[start:end]
-
-    # 2. Kurze Fades gegen Klicks an den Schnittkanten
-    if len(audio) > FADE_IN_MS + FADE_OUT_MS:
-        audio = audio.fade_in(FADE_IN_MS).fade_out(FADE_OUT_MS)
-
-    # 3. Zwischenstand als WAV, dann ffmpeg: loudnorm + Zielformat
-    tmp_wav = output_path + ".pre.wav"
-    audio.export(tmp_wav, format="wav")
-
-    if EXPORT_FORMAT == "opus":
-        codec_args = ["-c:a", "libopus", "-b:a", OPUS_BITRATE]
-    else:
-        codec_args = ["-c:a", "libmp3lame", "-b:a", "128k"]
-
-    cmd = [
-        FFMPEG_BIN or "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", tmp_wav,
-        "-af", f"loudnorm=I={LOUDNORM_I}:TP={LOUDNORM_TP}:LRA=11",
-        "-ar", str(TARGET_SAMPLE_RATE),
-        *codec_args,
-        output_path,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode != 0:
-            print(f"      ⚠ ffmpeg-Postprocessing fehlgeschlagen: {result.stderr[:200]}")
-            # Fallback: ohne loudnorm direkt aus pydub exportieren
-            fallback_fmt = "opus" if EXPORT_FORMAT == "opus" else "mp3"
-            audio.export(output_path, format=fallback_fmt,
-                         parameters=["-ar", str(TARGET_SAMPLE_RATE)])
-        return True
-    except Exception as e:
-        print(f"      ⚠ Postprocessing-Fehler: {e}")
-        return False
-    finally:
-        if os.path.exists(tmp_wav):
-            os.remove(tmp_wav)
+def postprocess_audio(input_path: str, output_path: str):
+    """Successful return means a fully decoded and verified export, or raises."""
+    if not FFMPEG_BIN or not FFPROBE_BIN:
+        raise AudioProcessingError("ffmpeg und ffprobe werden für jeden Export benötigt")
+    return export_audio(input_path, output_path, ffmpeg=FFMPEG_BIN, ffprobe=FFPROBE_BIN,
+                        export_format=EXPORT_FORMAT, sample_rate=TARGET_SAMPLE_RATE,
+                        bitrate=OPUS_BITRATE, target_i=LOUDNORM_I, target_tp=LOUDNORM_TP,
+                        process=POSTPROCESS, keep_start_ms=EDGE_KEEP_START_MS,
+                        keep_end_ms=EDGE_KEEP_END_MS, min_edge_silence_ms=EDGE_MIN_SILENCE_MS,
+                        max_edge_trim_ms=EDGE_TRIM_MAX_MS, fade_in_ms=FADE_IN_MS, fade_out_ms=FADE_OUT_MS)
 
 
 def transcribe_audio(audio_path: str, model) -> str:
@@ -789,152 +747,114 @@ def quality_check(audio_path, original_text, whisper_model, gemini_client=None,
 # ─────────────────────────────────────────────
 
 def process_row(row, ws, header_map, whisper_model, gemini_client, counts):
-    """Verarbeitet eine einzelne Sheet-Zeile: generieren, QC, Datei ablegen, zurückschreiben."""
-    row_num = row["_row"]
-    text = row.get("text", "").strip()
-    label = row.get("id", "").strip() or f"Zeile {row_num}"
-
+    """Isolated attempts: preserve sources, publish only a validated QC pass."""
+    row_num, text = row["_row"], row.get("text", "").strip()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Leerer Text → review needed (nicht in der Dropdown-Liste ist "skipped", daher markieren)
     if not text:
-        print(f"[Zeile {row_num}] '{label}' → kein Text, übersprungen.")
-        write_back(ws, header_map, row_num,
-                   {"status": "review needed", "reason": "kein Text", "generated_at": now,
-                    "qc_state": "error", "qc_details": ""})
+        write_back(ws, header_map, row_num, {"status": "review needed", "reason": "kein Text",
+                   "generated_at": now, "qc_state": "error", "qc_details": ""})
         counts["skipped"] += 1
         return
-
-    # mode: "Einzelwort" → Einzelwort-Modus, sonst Normal
-    single_word_mode = row.get("mode", "").strip().lower() in ("einzelwort", "word")
-    filename = build_filename(row)
+    try:
+        filename = build_filename(row)
+    except AudioProcessingError as e:
+        write_back(ws, header_map, row_num, {"status": "review needed", "reason": str(e),
+                   "generated_at": now, "qc_state": "error", "qc_details": ""})
+        counts["failed"] += 1
+        return
     final_path = os.path.join(OUTPUT_DIR, filename)
-
-    mode_note = "Einzelwort" if single_word_mode else "Normal"
-    preview = text[:50] + "…" if len(text) > 50 else text
-    print(f"[Zeile {row_num}] '{label}' ({mode_note}) → {filename}")
-    print(f"            \"{preview}\"")
-
-    best_attempt = None  # (path, wer, silence_ms, gemini_score, reason, transcript, score)
-    attempt_files = []   # alle Zwischen-Dateien dieses Items (für Aufräumen)
-    attempt_qc = {}      # Befunde immer dem zugehörigen Audioversuch zuordnen
+    single_word_mode = row.get("mode", "").strip().lower() in ("einzelwort", "word")
+    sources = Path(OUTPUT_DIR) / ".sources"
+    sources.mkdir(parents=True, exist_ok=True)
+    workdir = Path(tempfile.mkdtemp(prefix=f"row-{row_num}-", dir=sources))
+    history, candidates = [], []
+    selected = None
+    print(f"[Zeile {row_num}] {row.get('id', '')} → {filename}")
 
     for attempt in range(1, MAX_RETRIES + 1):
+        print(f"   Attempt {attempt}/{MAX_RETRIES}...")
         seed = random.randint(1, 1_000_000) if attempt > 1 else None
-        seed_note = f" (seed={seed})" if seed else ""
-        print(f"   Attempt {attempt}/{MAX_RETRIES}{seed_note}...")
-
-        stem = os.path.join(OUTPUT_DIR, f"_tmp_{row_num}_{attempt}")
-
-        # 1. Generieren (PCM/WAV bevorzugt; Rückgabe = tatsächlicher Pfad)
-        raw_path = text_to_speech(text, stem + "_raw", seed=seed, single_word_mode=single_word_mode)
-        if not raw_path:
-            continue
-        attempt_files.append(raw_path)
-        work_path = raw_path
-
-        # 2. Einzelwort: Einleitung in SEPARATE Datei wegschneiden + Sanity-Checks
-        if single_word_mode:
-            trimmed_path = stem + "_trimmed.wav"
-            try:
-                trim_to_word(raw_path, trimmed_path)
-                attempt_files.append(trimmed_path)
-                work_path = trimmed_path
-            except Exception as e:
-                print(f"      ⚠ Trimming fehlgeschlagen (nutze ungetrimmtes Audio): {e}")
-
-            ok, sanity_reason = single_word_sanity_check(work_path)
-            if not ok:
-                print(f"   ✗ Sanity-Check: {sanity_reason}")
-                # zählt als fehlgeschlagener Versuch; als best_attempt-Kandidat aufnehmen
-                score = 2.0  # schlechter als jeder QC-Fail, aber vorhanden falls alles scheitert
-                if best_attempt is None:
-                    best_attempt = (work_path, 1.0, 0, 0, sanity_reason, "", score)
-                time.sleep(DELAY_BETWEEN_REQUESTS)
-                continue
-
-        # 3. Postprocessing: Stille trimmen, Fades, Loudness-Normalisierung, Zielformat
-        if POSTPROCESS:
-            processed_path = stem + f"_final.{EXPORT_FORMAT}"
-            if postprocess_audio(work_path, processed_path):
-                attempt_files.append(processed_path)
-                work_path = processed_path
+        stages, raw_path, work_path = {}, "", ""
+        stage = "generation"
+        try:
+            raw_path = text_to_speech(text, str(workdir / f"attempt-{attempt}_raw"),
+                                      seed=seed, single_word_mode=single_word_mode)
+            if not raw_path:
+                raise AudioProcessingError("ElevenLabs-Generierung fehlgeschlagen")
+            work_path = raw_path
+            stages[stage] = CheckResult("passed", "Rohaufnahme gespeichert")
+            if single_word_mode:
+                stage = "cut"
+                trimmed = str(workdir / f"attempt-{attempt}_trimmed.wav")
+                cut_details = trim_to_word(raw_path, trimmed)
+                if not isinstance(cut_details, dict):
+                    raise AudioProcessingError("Schnitt lieferte keinen bestätigten Befund")
+                work_path = trimmed
+                ok, reason = single_word_sanity_check(work_path)
+                if not ok:
+                    raise AudioProcessingError(reason)
+                stages[stage] = CheckResult("passed", "Zielwort anhand Zeitstempeln isoliert", details=cut_details)
             else:
-                print("      ⚠ Postprocessing übersprungen (nutze unbearbeitetes Audio)")
-
-        # 4. QC auf dem FINALEN (bearbeiteten) Audio
-        qc = quality_check(
-            work_path, text, whisper_model, gemini_client,
-            skip_silence=single_word_mode, single_word_mode=single_word_mode
-        )
-        attempt_qc[work_path] = qc.to_dict()
-        reason, wer, silence_ms = qc.reason, qc.wer, qc.silence_ms
-        gemini_score, transcript = qc.gemini_score, qc.transcript
-
+                stages["cut"] = CheckResult("skipped", "Kein Einzelwort-Schnitt erforderlich", required=False)
+            stage = "export"
+            processed = str(workdir / f"attempt-{attempt}_final.{EXPORT_FORMAT}")
+            export_details = postprocess_audio(work_path, processed)
+            if not isinstance(export_details, dict):
+                raise AudioProcessingError("Export wurde nicht erfolgreich validiert")
+            work_path = processed
+            stages[stage] = CheckResult("passed", "Exportformat, Dekodierung und Profil geprüft", details=export_details)
+            stage = "qc"
+            qc = quality_check(work_path, text, whisper_model, gemini_client,
+                               skip_silence=single_word_mode, single_word_mode=single_word_mode)
+            qc.checks = {**stages, **qc.checks}
+        except Exception as e:
+            qc = QualityResult({**stages, stage: CheckResult("error", str(e)),
+                                "content": CheckResult("skipped", "Keine vollständige Qualitätsprüfung möglich")})
+        entry = {"attempt": attempt, "seed": seed, "audio": work_path or raw_path,
+                 "raw_audio": raw_path, "qc": qc.to_dict()}
+        history.append(entry)
+        # Store after each attempt, including failures. Source/intermediate files
+        # remain usable for review and reprocessing without another paid request.
+        (workdir / "attempts.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
         if qc.passed:
-            shutil.move(work_path, final_path)
-            gemini_note = f", Gemini={gemini_score}/10" if ENABLE_GEMINI_CHECK and gemini_score else ""
-            print(f"   ✅ Passed QC (WER={wer:.0%}, silence={silence_ms if silence_ms is not None else 'nicht geprüft'}{gemini_note}) → {filename}")
-            write_back(ws, header_map, row_num, {
-                "status": "passed", "filename": filename,
-                "reason": "", "generated_at": now,
-                "qc_state": "passed", "qc_details": json.dumps(qc.to_dict(), ensure_ascii=False),
-            })
-            row.update({"status": "passed", "filename": filename, "reason": "",
-                        "generated_at": now, "_transcript": transcript,
-                        "_wer": wer, "_gemini": gemini_score, "_qc": qc.to_dict()})
-            _record_review(row)
-            counts["passed"] += 1
-            _cleanup(attempt_files)
-            return
-
-        print(f"   ✗ Failed: {reason}")
-        if qc.has_error:
-            # Infrastruktur-/Prüffehler nicht durch weitere kostenpflichtige
-            # Generierungen behandeln. Audio + offene Prüfung für Review behalten.
-            best_attempt = (work_path, wer, silence_ms, gemini_score, reason, transcript, float("inf"))
-            print("      ⚠ QC unvollständig — Audio behalten, keine weitere TTS-Generierung für dieses Item.")
+            try:
+                os.replace(work_path, final_path)
+                entry["audio"] = final_path
+            except OSError as e:
+                qc.checks["publish"] = CheckResult("error", f"Datei konnte nicht veröffentlicht werden: {e}")
+                entry["qc"] = qc.to_dict()
+            selected = (entry, qc)
             break
-        naturalness_penalty = (10 - gemini_score) / 10 if gemini_score else 0
-        score = (wer if wer is not None else 1.0) + ((silence_ms or 0) / 10000) + naturalness_penalty
-        if best_attempt is None or score < best_attempt[6]:
-            best_attempt = (work_path, wer, silence_ms, gemini_score, reason, transcript, score)
-
+        print(f"   ⚠ {qc.reason}")
+        if qc.has_error:
+            selected = (entry, qc)
+            break
+        # Hard content failures rank behind a fully assessed, content-correct
+        # candidate. Unknown/skipped checks never earn an artificial good score.
+        content_ok = qc.checks.get("text", CheckResult("skipped", "")).state == "passed"
+        rank = (not content_ok, qc.wer if qc.wer is not None else float("inf"),
+                -(qc.gemini_score if qc.gemini_score is not None else -1), qc.silence_ms or 0)
+        candidates.append((rank, entry, qc))
         time.sleep(DELAY_BETWEEN_REQUESTS)
-
-    # Alle Versuche fehlgeschlagen → bester Versuch behalten, Status "review needed"
-    if best_attempt:
-        saved_qc = attempt_qc.get(best_attempt[0])
-        shutil.move(best_attempt[0], final_path)
-        _, b_wer, b_sil, b_gem, b_reason, b_transcript, _ = best_attempt
-        wer_note = f"{b_wer:.0%}" if b_wer is not None else "nicht geprüft"
-        print(f"   ⚠ Keine vollständige Freigabe → 'review needed' (WER={wer_note}, Gemini={b_gem if b_gem is not None else 'nicht geprüft'})")
-        write_back(ws, header_map, row_num, {
-            "status": "review needed", "filename": filename,
-            "reason": b_reason, "generated_at": now,
-            "qc_state": "error" if saved_qc and any(c["state"] == "error" for c in saved_qc["checks"].values()) else "failed",
-            "qc_details": json.dumps(saved_qc, ensure_ascii=False) if saved_qc else "",
-        })
-        row.update({"status": "review needed", "filename": filename, "reason": b_reason,
-                    "generated_at": now, "_transcript": b_transcript,
-                    "_wer": b_wer, "_gemini": b_gem, "_qc": saved_qc})
-        _record_review(row)
-        counts["review"] += 1
-    else:
-        # gar kein Audio erzeugt
-        print(f"   ✗ Keine Audio-Generierung möglich → review needed")
-        failed_qc = QualityResult({"generation": CheckResult("error", "Kein neues Audio erzeugt")}).to_dict()
-        write_back(ws, header_map, row_num, {
-            "status": "review needed", "filename": filename,
-            "reason": "ElevenLabs-Generierung fehlgeschlagen", "generated_at": now,
-            "qc_state": "error", "qc_details": json.dumps(failed_qc, ensure_ascii=False),
-        })
-        row.update({"status": "review needed", "filename": filename,
-                    "reason": "ElevenLabs-Generierung fehlgeschlagen", "generated_at": now,
-                    "_qc": failed_qc, "_wer": None, "_gemini": None, "_transcript": ""})
-        _record_review(row)
-        counts["failed"] += 1
-    _cleanup(attempt_files)
+    if selected is None:
+        if not candidates:
+            raise RuntimeError("Keine Generierungsversuche konfiguriert")
+        _, entry, qc = min(candidates, key=lambda item: item[0])
+        selected = entry, qc
+    entry, qc = selected
+    (workdir / "attempts.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    status = "passed" if qc.passed else "review needed"
+    audio_path = entry["audio"] if entry["audio"] and os.path.isfile(entry["audio"]) else ""
+    updates = {"status": status, "filename": filename, "reason": "" if qc.passed else qc.reason,
+               "generated_at": now, "qc_state": "passed" if qc.passed else ("error" if qc.has_error else "failed"),
+               "qc_details": json.dumps(qc.to_dict(), ensure_ascii=False)}
+    write_back(ws, header_map, row_num, updates)
+    row.update({**updates, "_transcript": qc.transcript, "_wer": qc.wer,
+                "_gemini": qc.gemini_score, "_qc": qc.to_dict(), "_audio_path": audio_path,
+                "_sources_dir": str(workdir.resolve())})
+    _record_review(row)
+    counts["passed" if qc.passed else ("review" if audio_path else "failed")] += 1
+    print(f"   {'✅' if qc.passed else '⚠'} {status}: {filename}")
 
 
 def _cleanup(paths):
@@ -963,7 +883,7 @@ def _review_qc_html(qc):
         return '<div class="cmeta">Älterer Eintrag: keine detaillierten QC-Befunde gespeichert.</div>'
     labels = {"passed": "bestanden", "failed": "auffällig", "error": "Prüffehler",
               "skipped": "nicht ausgeführt"}
-    names = {"generation": "Generierung", "duration": "Audiodauer", "transcription": "Transkription", "text": "Textvergleich",
+    names = {"generation": "Generierung", "cut": "Schnitt", "export": "Export", "content": "Inhalt", "publish": "Speichern", "qc": "Qualitätsprüfung", "duration": "Audiodauer", "transcription": "Transkription", "text": "Textvergleich",
              "silence": "Pausen", "gemini": "Natürlichkeit"}
     parts = []
     for name, check in qc.get("checks", {}).items():
@@ -1008,13 +928,16 @@ def _save_review_entry(entry: dict):
 def _record_review(row: dict):
     """Übernimmt das Ergebnis einer verarbeiteten Zeile in die Review-Datenbasis."""
     filename = row.get("filename", "")
-    abspath = os.path.abspath(os.path.join(OUTPUT_DIR, filename)) if filename else ""
+    abspath = row.get("_audio_path", os.path.join(OUTPUT_DIR, filename) if filename else "")
+    abspath = os.path.abspath(abspath) if abspath else ""
     _save_review_entry({
         "row": row.get("_row"),
         "id": row.get("id", ""),
         "text": row.get("text", ""),
         "filename": filename,
         "abspath": abspath,   # voller Pfad → HTML-Player funktioniert auch bei externem Zielordner
+        "audio_path_recorded": "_audio_path" in row,
+        "sources_dir": row.get("_sources_dir", ""),
         "mode": row.get("mode", ""),
         "status": row.get("status", ""),
         "reason": row.get("reason", ""),
@@ -1224,7 +1147,7 @@ def generate_review_html(output_file=REVIEW_HTML):
         stored = e.get("abspath", "")
         if stored and os.path.exists(stored):
             audio_src = "file://" + stored
-        elif filename:
+        elif filename and not e.get("audio_path_recorded"):
             candidate = os.path.join(OUTPUT_DIR, filename)
             if os.path.exists(candidate):
                 audio_src = "file://" + os.path.abspath(candidate)
@@ -1312,9 +1235,10 @@ def reset_review(output_file=REVIEW_HTML):
 
 
 def main(only_rows=None):
-    global _gemini_last_call, _gemini_disabled_for_run
+    global _gemini_last_call, _gemini_disabled_for_run, _elevenlabs_pcm_failed
     _gemini_last_call = 0.0
     _gemini_disabled_for_run = False
+    _elevenlabs_pcm_failed = False
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(REVIEW_DIR, exist_ok=True)
 
@@ -1325,8 +1249,8 @@ def main(only_rows=None):
     if ENABLE_GEMINI_CHECK and not GEMINI_API_KEY:
         print("❌ GEMINI_API_KEY fehlt. Trage ihn in die .env ein oder setze ENABLE_GEMINI_CHECK = False.")
         return
-    if POSTPROCESS and FFMPEG_BIN is None:
-        print("❌ ffmpeg nicht gefunden — wird für Postprocessing/Opus benötigt.")
+    if FFMPEG_BIN is None or FFPROBE_BIN is None:
+        print("❌ ffmpeg/ffprobe nicht gefunden — werden für Export und Prüfung benötigt.")
         print("   macOS: brew install ffmpeg | Windows: winget install ffmpeg")
         print("   (Tipp: Falls ffmpeg installiert ist, App über fix_app.py neu bauen —")
         print("    der Launcher ergänzt dann die Homebrew-Pfade im PATH.)")
@@ -1372,6 +1296,18 @@ def main(only_rows=None):
     if not to_process:
         print("   Nichts zu tun — keine passende Zeile gefunden.")
         return
+
+    # Validate every filename before any paid request, including collisions with
+    # existing rows outside the selection. Regeneration of the same row is fine.
+    seen = {}
+    for record in records:
+        if not record.get("text", "").strip():
+            continue
+        name = build_filename(record)
+        key = name.casefold()
+        if key in seen:
+            raise ValueError(f"Dateiname mehrfach vergeben: {name} (Zeilen {seen[key]} und {record['_row']})")
+        seen[key] = record["_row"]
 
     usage_start = get_elevenlabs_character_count()
     counts = {"passed": 0, "review": 0, "failed": 0, "skipped": 0}

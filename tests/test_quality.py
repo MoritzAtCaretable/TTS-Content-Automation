@@ -192,7 +192,7 @@ class PipelineQCTests(unittest.TestCase):
             tts.return_value = str(raw)
             def export(_, output):
                 Path(output).write_bytes(b"OggS test")
-                return True
+                return {"validated": True}
             post.side_effect = export
             row = {"_row": 2, "id": "item", "text": "Banane", "mode": "Normal"}
             counts = dict(passed=0, review=0, failed=0, skipped=0)
@@ -220,7 +220,7 @@ class PipelineQCTests(unittest.TestCase):
                 tts.side_effect = generate
                 def export(_, output):
                     Path(output).write_bytes(b"OggS test")
-                    return True
+                    return {"validated": True}
                 post.side_effect = export
                 # Second failed attempt is best; ensure its details survive.
                 scores = [7] if states == ("passed",) else [3, 5, 2]
