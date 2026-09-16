@@ -11,6 +11,8 @@ Die eigentliche Arbeit bleibt unverändert in sheets_to_elevenlabs_qc_local.py:
 from __future__ import annotations
 
 import os
+import json
+import uuid
 import re
 import sys
 import queue
@@ -65,6 +67,10 @@ class Api:
         self.process: Optional[subprocess.Popen] = None
         self.progress = {"done": 0, "total": 0}
         self.cancelled = False
+        self._busy = False
+        self._job_lock = threading.Lock()
+        self._outcome = {"state": "idle", "id": "", "message": "Bereit"}
+        self._review_server = None
         self.model = (pipeline.ELEVENLABS_MODEL
                       if pipeline.ELEVENLABS_MODEL in VOICE_MODELS else VOICE_MODELS[0])
         self.folder = str((PROJECT_DIR / pipeline.OUTPUT_DIR).resolve()
@@ -82,7 +88,7 @@ class Api:
             "folder": self.folder,
             "sheet_name": pipeline.SHEET_NAME,
             "has_sheet_id": bool(sheet_url()),
-            "running": self.process is not None,
+            "running": self._busy,
         }
 
     @_guard
@@ -189,21 +195,25 @@ class Api:
 
     @_guard
     def open_review(self) -> dict:
-        path = self.root / pipeline.REVIEW_HTML
-        if not path.exists():
-            pipeline.generate_review_html()
-        webbrowser.open("file://" + str(path))
-        return {}
+        from review_service import ReviewServer
+        with self._job_lock:
+            if self._review_server is None:
+                self._review_server = ReviewServer(self, pipeline, self.root)
+        webbrowser.open(self._review_server.url)
+        return {"url": self._review_server.url}
 
     @_guard
     def reset_review(self) -> dict:
-        pipeline.reset_review()
+        with self._job_lock:
+            if self._busy:
+                raise ValueError("Bitte den laufenden Vorgang abwarten.")
+            pipeline.reset_review()
         self._log("🗑 Review-Seite zurückgesetzt — neue Audios werden wieder gesammelt.")
         return {}
 
     @_guard
     def check_update(self) -> dict:
-        if self.process is not None:
+        if self._busy:
             raise ValueError("Bitte warten, bis der aktuelle Lauf beendet ist.")
         if not (self.root / ".git").is_dir():
             return {"state": "nogit",
@@ -211,7 +221,7 @@ class Api:
                                "automatische Updates das Projekt einmal per "
                                "'git clone' einrichten (siehe README)."}
         try:
-            r = subprocess.run(["git", "pull"], cwd=str(self.root),
+            r = subprocess.run(["git", "pull", "--ff-only"], cwd=str(self.root),
                                capture_output=True, text=True, timeout=60)
         except FileNotFoundError:
             raise ValueError("git ist nicht installiert.")
@@ -227,60 +237,95 @@ class Api:
 
     # ----------------------------------------------------------------- Lauf
 
-    @_guard
-    def start(self, rows: list, all_open: bool = False) -> dict:
-        """Startet den Generierungslauf.
+    def job_state(self):
+        with self._job_lock:
+            return {"running": self._busy, "cancellable": self.process is not None, "progress": dict(self.progress), "outcome": dict(self._outcome)}
 
-        rows      = genau diese Sheet-Zeilen (übergeht den Status-Filter).
-        all_open  = Rückfall, wenn keine Tabelle geladen ist: dann entscheidet
-                    wie früher allein der Status im Sheet.
-        """
-        if self.process is not None:
-            raise ValueError("Es läuft bereits eine Generierung.")
-        wanted = [int(n) for n in (rows or [])]
-        if not wanted and not all_open:
-            raise ValueError("Es ist keine Zeile ausgewählt.")
-
-        self.cancelled = False
-        self.progress = {"done": 0, "total": len(wanted)}
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        env["ELEVENLABS_MODEL"] = self.model
-        env["OUTPUT_DIR"] = self.folder
-        if wanted:
-            env["TTS_ONLY_ROWS"] = ",".join(str(n) for n in wanted)
-        else:
-            env.pop("TTS_ONLY_ROWS", None)
-
-        script = str(self.root / "sheets_to_elevenlabs_qc_local.py")
-        cmd = [sys.executable, script]
-        threading.Thread(target=self._run, args=(cmd, env), daemon=True).start()
-        return {"total": len(wanted)}
-
-    def _run(self, cmd: List[str], env: dict) -> None:
+    def launch_job(self, operation, message="Vorgang läuft"):
+        with self._job_lock:
+            if self._busy:
+                raise ValueError("Es läuft bereits ein Vorgang. Bitte warten.")
+            self._busy = True
+            self.cancelled = False
+            self.progress = {"done": 0, "total": 0}
+            self._outcome = {"state": "running", "id": uuid.uuid4().hex, "message": message}
+            job_id = self._outcome["id"]
+        def worker():
+            state, message = "failed", "Vorgang unerwartet beendet"
+            try:
+                result = operation() or {}
+                state = "cancelled" if self.cancelled else "completed"
+                message = result.get("message", "Vorgang abgeschlossen.")
+                self._log(message)
+            except Exception as e:
+                state, message = "failed", str(e)
+                self._log("❌ " + message)
+            finally:
+                with self._job_lock:
+                    self._outcome = {"state": state, "id": job_id, "message": message}
+                    self._busy = False
         try:
-            self.process = subprocess.Popen(
-                cmd, cwd=str(self.root), stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
-            for line in self.process.stdout:            # type: ignore[union-attr]
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            with self._job_lock:
+                self._busy = False
+            raise
+        return {"job_id": job_id}
+
+    def run_generation(self, selection=None, folder=None, model=None):
+        env = os.environ.copy()
+        env.update(PYTHONUNBUFFERED="1", ELEVENLABS_MODEL=model or self.model,
+                   OUTPUT_DIR=folder or self.folder)
+        env.pop("TTS_ONLY_ROWS", None)
+        env.pop("TTS_SELECTION", None)
+        if selection is not None:
+            env["TTS_SELECTION"] = json.dumps(selection, ensure_ascii=False)
+        cmd = [sys.executable, str(self.root / "sheets_to_elevenlabs_qc_local.py")]
+        try:
+            p = subprocess.Popen(cmd, cwd=str(self.root), stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
+            self.process = p
+            if self.cancelled:
+                p.terminate()
+            for line in p.stdout:
                 line = line.rstrip("\n")
                 m = PROGRESS_RE.match(line)
                 if m:
-                    self.progress = {"done": int(m.group(1)),
-                                     "total": int(m.group(2))}
-                    continue
-                self.log_queue.put(line)
-            code = self.process.wait()
+                    self.progress = {"done": int(m.group(1)), "total": int(m.group(2))}
+                else:
+                    self.log_queue.put(line)
+            code = p.wait()
             if self.cancelled:
-                self.log_queue.put("\n⏹ Lauf abgebrochen.")
-            elif code == 0:
-                self.log_queue.put("\n✔ Lauf beendet.")
-            else:
-                self.log_queue.put(f"\n❌ Lauf mit Fehlercode {code} beendet.")
-        except Exception as e:
-            self.log_queue.put(f"\nFehler beim Starten: {e}")
+                return {"message": "Lauf abgebrochen. Bereits gespeicherte Ergebnisse bleiben erhalten."}
+            if code:
+                raise RuntimeError(f"Generierung mit Fehlercode {code} beendet. Siehe Protokoll.")
+            return {"message": "Generierung abgeschlossen. Qualitätsbefunde stehen in der Review-Seite."}
         finally:
             self.process = None
+
+    @_guard
+    def start(self, rows: list, all_open: bool = False) -> dict:
+        wanted = {int(n) for n in (rows or [])}
+        if not wanted and not all_open:
+            raise ValueError("Es ist keine Zeile ausgewählt.")
+        selection = None
+        if wanted:
+            selected = [r for r in self.rows if r["_row"] in wanted]
+            if len(selected) != len(wanted):
+                raise ValueError("Auswahl nicht mehr aktuell. Bitte Sheet neu laden.")
+            from tts_identity import resolve_record
+            selection = [{k: resolve_record(self.rows, r).get(k, "") for k in ("id", "text", "mode")} for r in selected]
+        self.progress = {"done": 0, "total": len(wanted)}
+        folder, model = self.folder, self.model
+        result = self.launch_job(lambda: self.run_generation(selection, folder, model), "Generierung läuft")
+        return {**result, "total": len(wanted)}
+
+    def shutdown(self):
+        if self._review_server is not None:
+            self._review_server.close()
+        if self.process is not None:
+            self.cancelled = True
+            self.process.terminate()
 
     @_guard
     def cancel(self) -> dict:
@@ -288,7 +333,7 @@ class Api:
         if p is None:
             return {}
         self.cancelled = True
-        self.log_queue.put("\n⏹ Abbruch angefordert — laufendes Item wird beendet…")
+        self.log_queue.put("\n⏹ Abbruch angefordert…")
         try:
             p.terminate()
         except Exception:
@@ -310,5 +355,5 @@ class Api:
         except queue.Empty:
             pass
         return {"lines": lines,
-                "running": self.process is not None,
-                "progress": dict(self.progress)}
+                "running": self._busy, "cancellable": self.process is not None,
+                "progress": dict(self.progress), "outcome": dict(self._outcome)}

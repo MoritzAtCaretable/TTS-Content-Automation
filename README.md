@@ -267,3 +267,37 @@ ausführen (`./install.sh` bzw. `install.bat`).
 | `install.bat` / `TTS_Studio.bat` | Einrichtung / Starter | Windows |
 | `requirements.txt` | Python-Abhängigkeiten | beide |
 | `TTS_Vorlage.xlsx` | Sheet-Vorlage mit Dropdowns | beide |
+
+### Interaktive Audio-Prüfung
+
+App neu starten und **Review** öffnen. Die neue Prüfseite läuft auf einer lokalen
+Adresse und bleibt bedienbar, solange die App geöffnet ist. Eine früher gespeicherte
+`review.html` bleibt ein Bericht zum Anhören; die Bearbeitung startet über die App.
+
+- **Freigeben / Zur Prüfung markieren:** Entscheidung mit optionaler Notiz lokal
+  speichern und ins Google Sheet schreiben. Manuelle Entscheidungen bleiben vom
+  automatischen Befund unterscheidbar. Freigeben prüft zusätzlich das Exportformat
+  und veröffentlicht die ausgewählte Version als finale Datei.
+- **Audio schneiden:** Aktuelle Version oder erhaltenes Original auswählen,
+  Start/Ende in der Wellenform einstellen und den Ausschnitt vorhören. Speichern
+  erstellt einen neuen, geprüften Export. Inhalt und Natürlichkeit müssen danach
+  erneut automatisch geprüft oder manuell freigegeben werden.
+- **Erneut automatisch prüfen:** Vorhandene Datei mit Whisper und, wenn aktiviert,
+  Gemini prüfen. Keine neue ElevenLabs-Generierung. Gemini-Aufrufe können Kosten
+  verursachen; Whisper wird im laufenden Review-Dienst wiederverwendet.
+- **Neu generieren:** Stimmmodell wählen und nur diesen Inhalt erneut erzeugen.
+  Vor dem kostenpflichtigen Aufruf erscheint eine Bestätigung.
+- **Synchronisierung wiederholen:** Nach einem Schreibfehler nur das gespeicherte
+  Ergebnis ins Sheet übertragen; Audio und Anbieter werden nicht erneut aufgerufen.
+
+Inhalts-IDs müssen eindeutig und nicht leer sein. Auswahl und Rückschreiben werden
+anhand von ID, Text und Modus erneut abgeglichen. Veränderte Texte, doppelte IDs und
+veraltete Browserstände werden abgewiesen. Alle Aktionen teilen sich mit der App
+eine Auftragssperre. Bitte nur eine App-Instanz pro Projekt betreiben; parallele
+Änderungen durch andere Programme am Sheet sind nicht transaktional sperrbar.
+
+Die Review-Daten werden atomar gespeichert und nach Sheet, Inhalts-ID und Zielpfad
+getrennt. Eine beschädigte Datenbank wird nicht still überschrieben. Originale,
+Versuche und vorherige Exporte bleiben in `.sources` erhalten. Beim Zurücksetzen
+der Review-Liste werden Audiodateien nicht gelöscht. Suche und Statusfilter helfen,
+offene Prüfungen und ausstehende Synchronisierungen zu finden.

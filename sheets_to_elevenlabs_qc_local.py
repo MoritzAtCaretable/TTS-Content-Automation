@@ -35,6 +35,7 @@ import random
 import shutil
 import subprocess
 import base64
+import hashlib
 import tempfile
 from pathlib import Path
 import requests
@@ -51,6 +52,7 @@ from tts_quality import (
     NATURALNESS_SCHEMA, NATURALNESS_SYSTEM_PROMPT, GEMINI_PROMPT_VERSION,
     SCORE_BY_SEVERITY, naturalness_prompt, parse_naturalness,
 )
+from tts_identity import resolve_record, parse_sheet_values
 from tts_audio import AudioProcessingError, trim_aligned_word, export_audio, safe_filename, silence_threshold
 
 # .env laden (falls python-dotenv installiert ist). Ohne .env greift os.getenv auf
@@ -279,27 +281,20 @@ def open_sheet():
     ]
     creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scopes)
     client = gspread.authorize(creds)
+    client.set_timeout(30)
     ws = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
-    all_values = ws.get_all_values()
-    if not all_values:
-        return ws, {}, []
-
-    header = all_values[0]
-    header_map = {h.strip().lower(): i + 1 for i, h in enumerate(header) if h.strip()}
-
-    records = []
-    for r_idx, row_values in enumerate(all_values[1:], start=2):
-        row = {}
-        for h_lower, col_idx in header_map.items():
-            row[h_lower] = row_values[col_idx - 1].strip() if col_idx - 1 < len(row_values) else ""
-        row["_row"] = r_idx
-        records.append(row)
+    header_map, records = parse_sheet_values(ws.get_all_values())
     return ws, header_map, records
 
 
-def write_back(ws, header_map: dict, row_number: int, updates: dict):
+def write_back(ws, header_map: dict, row_number: int, updates: dict, expected_row=None):
     """Schreibt die angegebenen Felder in ihre jeweiligen Spalten der Zeile zurück."""
+    if expected_row is not None:
+        header_map, records = parse_sheet_values(ws.get_all_values())
+        row_number = resolve_record(records, expected_row)["_row"]
+    if "status" not in header_map:
+        raise ValueError("Pflichtspalte status fehlt; Ergebnis kann nicht synchronisiert werden")
     data = []
     for field, value in updates.items():
         col = header_map.get(field.lower())
@@ -308,10 +303,7 @@ def write_back(ws, header_map: dict, row_number: int, updates: dict):
         cell = f"{col_letter(col)}{row_number}"
         data.append({"range": cell, "values": [[str(value)]]})
     if data:
-        try:
-            ws.batch_update(data)
-        except Exception as e:
-            print(f"      ⚠ Konnte Sheet-Zeile {row_number} nicht aktualisieren: {e}")
+        ws.batch_update(data, value_input_option="RAW")
 
 
 def should_process(status: str) -> bool:
@@ -818,9 +810,20 @@ def process_row(row, ws, header_map, whisper_model, gemini_client, counts):
         (workdir / "attempts.json").write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
         if qc.passed:
             try:
-                os.replace(work_path, final_path)
-                entry["audio"] = final_path
-            except OSError as e:
+                if ws is not None:
+                    _, current_records = parse_sheet_values(ws.get_all_values())
+                    current = resolve_record(current_records, row)
+                    if any(r["_row"] != current["_row"] and r.get("text") and build_filename(r).casefold() == filename.casefold() for r in current_records):
+                        raise ValueError("Dateiname wurde inzwischen einem anderen Inhalt zugewiesen")
+                    if current.get("filename") and build_filename(current) != filename:
+                        raise ValueError("Dateiname wurde während der Generierung geändert")
+                if os.path.isfile(final_path):
+                    shutil.copyfile(final_path, workdir / ("previous" + Path(final_path).suffix))
+                publish_path = str(workdir / ("publish" + Path(final_path).suffix))
+                shutil.copyfile(work_path, publish_path)
+                os.replace(publish_path, final_path)
+                entry["audio"] = work_path
+            except Exception as e:
                 qc.checks["publish"] = CheckResult("error", f"Datei konnte nicht veröffentlicht werden: {e}")
                 entry["qc"] = qc.to_dict()
             selected = (entry, qc)
@@ -848,11 +851,20 @@ def process_row(row, ws, header_map, whisper_model, gemini_client, counts):
     updates = {"status": status, "filename": filename, "reason": "" if qc.passed else qc.reason,
                "generated_at": now, "qc_state": "passed" if qc.passed else ("error" if qc.has_error else "failed"),
                "qc_details": json.dumps(qc.to_dict(), ensure_ascii=False)}
-    write_back(ws, header_map, row_num, updates)
     row.update({**updates, "_transcript": qc.transcript, "_wer": qc.wer,
                 "_gemini": qc.gemini_score, "_qc": qc.to_dict(), "_audio_path": audio_path,
-                "_sources_dir": str(workdir.resolve())})
+                "_sources_dir": str(workdir.resolve()), "_raw_audio_path": entry["raw_audio"],
+                "_target_path": os.path.abspath(final_path), "_sync_error": "Synchronisierung ausstehend",
+                "_sync_updates": updates})
     _record_review(row)
+    try:
+        write_back(ws, header_map, row_num, updates, expected_row=row)
+        row["_sync_error"] = ""
+        _record_review(row)
+    except Exception as e:
+        row["_sync_error"] = str(e)
+        print(f"      ⚠ Ergebnis lokal gespeichert, Sheet-Synchronisierung ausstehend: {e}")
+        _record_review(row)
     counts["passed" if qc.passed else ("review" if audio_path else "failed")] += 1
     print(f"   {'✅' if qc.passed else '⚠'} {status}: {filename}")
 
@@ -900,29 +912,46 @@ def _review_qc_html(qc):
 
 
 def _load_review_data() -> dict:
-    if os.path.exists(REVIEW_DATA_FILE):
-        try:
-            with open(REVIEW_DATA_FILE, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
-
-
-def _save_review_entry(entry: dict):
-    """
-    Fügt einen Eintrag zur akkumulierten Review-Datenbasis hinzu (oder aktualisiert
-    ihn, wenn dieselbe Datei neu generiert wurde). Bleibt über Läufe hinweg erhalten,
-    bis die GUI die Review-Seite zurücksetzt.
-    """
-    data = _load_review_data()
-    key = entry.get("filename") or f"row_{entry.get('row', '?')}"
-    data[key] = entry
+    if not os.path.exists(REVIEW_DATA_FILE):
+        return {}
     try:
-        with open(REVIEW_DATA_FILE, "w", encoding="utf-8") as f:
+        with open(REVIEW_DATA_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not all(isinstance(e, dict) for e in data.values()):
+            raise ValueError("Keine Eintragsliste")
+        return data
+    except (OSError, ValueError) as e:
+        raise RuntimeError("Review-Daten nicht lesbar; bestehende Datei bleibt erhalten") from e
+
+
+def _save_review_entry(entry: dict, key=None):
+    data = _load_review_data()
+    if key is None:
+        scope = "|".join(str(entry.get(k, "")) for k in ("sheet_id", "sheet_name", "id", "target_path"))
+        key = "item-" + hashlib.sha256(scope.encode()).hexdigest()[:24]
+        legacy = entry.get("filename")
+        old = data.get(legacy)
+        if old and old.get("id") == entry.get("id") and old.get("abspath") == entry.get("target_path"):
+            data[key] = data.pop(legacy)
+    previous = data.get(key)
+    if previous and "history" not in entry:
+        entry["history"] = list(previous.get("history", []))
+        fields = ("abspath", "raw_abspath", "status", "reason", "qc", "decision", "generated_at", "sources_dir")
+        if any(previous.get(k) != entry.get(k) for k in fields):
+            entry["history"].append({k: previous.get(k) for k in fields})
+    data[key] = entry
+    destination = Path(REVIEW_DATA_FILE).resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent,
+                                         suffix=".json", delete=False) as f:
+            temporary = f.name
             json.dump(data, f, ensure_ascii=False, indent=1)
-    except Exception as e:
-        print(f"      ⚠ Review-Daten konnten nicht gespeichert werden: {e}")
+        os.replace(temporary, destination)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def _record_review(row: dict):
@@ -938,6 +967,10 @@ def _record_review(row: dict):
         "abspath": abspath,   # voller Pfad → HTML-Player funktioniert auch bei externem Zielordner
         "audio_path_recorded": "_audio_path" in row,
         "sources_dir": row.get("_sources_dir", ""),
+        "raw_abspath": os.path.abspath(row["_raw_audio_path"]) if row.get("_raw_audio_path") else "",
+        "target_path": row.get("_target_path", ""),
+        "sheet_id": SPREADSHEET_ID, "sheet_name": SHEET_NAME,
+        "sync_error": row.get("_sync_error", ""), "sync_updates": row.get("_sync_updates", {}),
         "mode": row.get("mode", ""),
         "status": row.get("status", ""),
         "reason": row.get("reason", ""),
@@ -1245,27 +1278,16 @@ def main(only_rows=None):
     # Keys prüfen (kommen aus der .env)
     if not ELEVENLABS_API_KEY:
         print("❌ ELEVENLABS_API_KEY fehlt. Trage ihn in die .env ein (siehe .env.example).")
-        return
+        raise SystemExit(1)
     if ENABLE_GEMINI_CHECK and not GEMINI_API_KEY:
         print("❌ GEMINI_API_KEY fehlt. Trage ihn in die .env ein oder setze ENABLE_GEMINI_CHECK = False.")
-        return
+        raise SystemExit(1)
     if FFMPEG_BIN is None or FFPROBE_BIN is None:
         print("❌ ffmpeg/ffprobe nicht gefunden — werden für Export und Prüfung benötigt.")
         print("   macOS: brew install ffmpeg | Windows: winget install ffmpeg")
         print("   (Tipp: Falls ffmpeg installiert ist, App über fix_app.py neu bauen —")
         print("    der Launcher ergänzt dann die Homebrew-Pfade im PATH.)")
-        return
-
-    print(f"🧠 Loading Whisper model '{WHISPER_MODEL}'... (first run downloads it)")
-    whisper_model = whisper.load_model(WHISPER_MODEL)
-    print("   Model loaded.")
-
-    gemini_client = None
-    if ENABLE_GEMINI_CHECK:
-        print(f"✨ Initializing Gemini client ({GEMINI_MODEL})...")
-        gemini_client = genai.Client(api_key=GEMINI_API_KEY,
-                                     http_options=types.HttpOptions(timeout=60000))
-    print()
+        raise SystemExit(1)
 
     print("📄 Öffne Google Sheet...")
     ws, header_map, records = open_sheet()
@@ -1273,13 +1295,27 @@ def main(only_rows=None):
     # Pflichtspalten prüfen
     for col in ("id", "text", "status"):
         if col not in header_map:
-            print(f"   ⚠ Warnung: Spalte '{col}' fehlt in der Kopfzeile.")
+            raise ValueError(f"Pflichtspalte '{col}' fehlt in der Kopfzeile.")
 
     # Wurde in der GUI eine konkrete Auswahl getroffen, gilt genau die —
     # unabhängig vom Status. Sonst wie gehabt der Status-Filter.
     if only_rows is None:
         only_rows = ONLY_ROWS
-    if only_rows:
+    selection_json = os.getenv("TTS_SELECTION", "")
+    if selection_json:
+        selection = json.loads(selection_json)
+        if not isinstance(selection, list) or not selection:
+            raise ValueError("Ungültige Inhaltsauswahl")
+        to_process = []
+        for expected in selection:
+            record = dict(resolve_record(records, expected))
+            if expected.get("filename"):
+                if record.get("filename") and build_filename(record) != expected["filename"]:
+                    raise ValueError("Dateiname wurde geändert. Bitte Sheet neu laden.")
+                record["filename"] = safe_filename(expected["filename"])
+            to_process.append(record)
+        print(f"   {len(to_process)} Inhalte anhand stabiler IDs ausgewählt.")
+    elif only_rows:
         wanted = {int(n) for n in only_rows}
         to_process = [r for r in records if r["_row"] in wanted]
         print(f"   {len(records)} Zeilen gesamt, {len(to_process)} ausgewählt "
@@ -1300,7 +1336,9 @@ def main(only_rows=None):
     # Validate every filename before any paid request, including collisions with
     # existing rows outside the selection. Regeneration of the same row is fine.
     seen = {}
-    for record in records:
+    selected_by_row = {r["_row"]: r for r in to_process}
+    for original_record in records:
+        record = selected_by_row.get(original_record["_row"], original_record)
         if not record.get("text", "").strip():
             continue
         name = build_filename(record)
@@ -1308,6 +1346,21 @@ def main(only_rows=None):
         if key in seen:
             raise ValueError(f"Dateiname mehrfach vergeben: {name} (Zeilen {seen[key]} und {record['_row']})")
         seen[key] = record["_row"]
+
+    for row in to_process:
+        resolve_record(records, row)
+    _load_review_data()  # Refuse to overwrite an unreadable journal before paid requests.
+
+    print(f"🧠 Loading Whisper model '{WHISPER_MODEL}'... (first run downloads it)")
+    whisper_model = whisper.load_model(WHISPER_MODEL)
+    print("   Model loaded.")
+
+    gemini_client = None
+    if ENABLE_GEMINI_CHECK:
+        print(f"✨ Initializing Gemini client ({GEMINI_MODEL})...")
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY,
+                                     http_options=types.HttpOptions(timeout=60000))
+    print()
 
     usage_start = get_elevenlabs_character_count()
     counts = {"passed": 0, "review": 0, "failed": 0, "skipped": 0}
@@ -1339,6 +1392,8 @@ def main(only_rows=None):
     except Exception as e:
         print(f"⚠ Review-HTML konnte nicht erstellt werden: {e}")
     print(f"{'='*60}")
+    if gemini_client is not None:
+        gemini_client.close()
 
 
 if __name__ == "__main__":

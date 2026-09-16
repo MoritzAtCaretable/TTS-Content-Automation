@@ -12,6 +12,7 @@ const S = {
   loading: false,
   running: false,
   adding: false,
+  lastJob: "",
 };
 
 /* ---------- kleine Helfer ---------- */
@@ -109,7 +110,7 @@ function updateSel() {
     $("#scope").textContent = total
       ? `${n} ausgewählt — verarbeitet wird genau diese Auswahl`
       : "";
-    $("#btnStart").disabled = S.loaded && total > 0 && n === 0;
+    $("#btnStart").disabled = S.loading || S.adding || !S.loaded || n === 0;
   }
 }
 
@@ -121,9 +122,10 @@ function toggleRow(row) {
   updateSel();
 }
 
-async function loadRows(quiet) {
+async function loadRows(quiet, selectOpen = false) {
   if (S.loading || S.running) return;
   S.loading = true;
+  updateSel();
   $("#btnReload").disabled = true;
   $("#selText").textContent = "Lade Sheet…";
   if (!S.rows.length) renderRows();
@@ -138,12 +140,12 @@ async function loadRows(quiet) {
     $("#selText").textContent = "Laden fehlgeschlagen.";
     return;
   }
-  const vorher = new Map(S.rows.map(x => [x.row, S.sel.has(x.row)]));
+  const vorher = new Map(S.rows.map(x => [x.id, S.sel.has(x.row)]));
   S.rows = r.rows || [];
   S.loaded = true;
   // Auswahl beim Neuladen erhalten; neue Zeilen nach Status vorwählen.
   S.sel = new Set(S.rows.filter(x =>
-    vorher.has(x.row) ? vorher.get(x.row) : x.open).map(x => x.row));
+    selectOpen ? x.open : (vorher.has(x.id) ? vorher.get(x.id) : x.open)).map(x => x.row));
 
   $("#shDot").style.background = "var(--ct_correct)";
   $("#shVal").textContent = "verbunden";
@@ -184,7 +186,7 @@ async function addRows() {
 
 /* ---------- Lauf ---------- */
 async function start() {
-  if (S.running) return;
+  if (S.running || S.loading || S.adding || !S.loaded) return;
   const rows = Array.from(S.sel).sort((a, b) => a - b);
   const allOpen = !S.loaded || !S.rows.length;     // Tabelle leer → Status-Filter
   if (!rows.length && !allOpen) {
@@ -216,6 +218,8 @@ function setRunning(on, total) {
   $("#btnReload").disabled = on;
   $("#btnAdd").disabled = on;
   $("#btnUpdate").disabled = on;
+  $("#model").disabled = on;
+  $("#btnFolder").disabled = on;
   $$(".pill").forEach(b => b.disabled = on);
   $("#state").textContent = on ? "Läuft…" : "Bereit";
   if (on) {
@@ -241,16 +245,20 @@ async function tick() {
   if (r) {
     if (r.lines && r.lines.length) addLog(r.lines.join("\n"));
     const p = r.progress || {};
+    if (r.running && !S.running) setRunning(true, p.total);
+    $("#btnStop").disabled = !r.cancellable;
     if (r.running && p.total) {
       $("#bar").classList.remove("busy");
       $("#barFill").style.width = Math.round((p.done / p.total) * 100) + "%";
       $("#scope").textContent = `${p.done} von ${p.total} verarbeitet`;
     }
-    if (S.running && !r.running) {
+    if (!r.running && (S.running || (r.outcome?.id && r.outcome.id !== S.lastJob))) {
+      S.lastJob = r.outcome?.id || S.lastJob;
       setRunning(false, 0);
-      $("#state").textContent = "Fertig.";
-      toast("Lauf beendet.", "ok");
-      loadRows(true);        // Status im Sheet hat sich geändert
+      const outcome = r.outcome || {};
+      $("#state").textContent = outcome.state === "failed" ? "Fehlgeschlagen" : outcome.state === "cancelled" ? "Abgebrochen" : "Fertig.";
+      toast(outcome.message || "Lauf beendet.", outcome.state === "failed" ? "err" : "ok");
+      loadRows(true, true);        // Status im Sheet hat sich geändert
     }
   }
   setTimeout(tick, 300);

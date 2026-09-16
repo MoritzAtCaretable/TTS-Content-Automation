@@ -15,6 +15,7 @@ tts-output/
 *.mp3
 *.wav
 review.html
+!webui/review.html
 review_data.json
 .tts_gui_error.log
 

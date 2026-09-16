@@ -47,7 +47,10 @@ def main() -> int:
         text_select=False,
     )
     api._window = window
-    webview.start()
+    try:
+        webview.start()
+    finally:
+        api.shutdown()
     return 0
 
 
