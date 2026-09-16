@@ -1,4 +1,10 @@
 """
+TTS Studio — frühere CustomTkinter-Oberfläche (ABGELÖST).
+
+Die App startet inzwischen tts_studio_web.py: dasselbe in HTML/CSS im
+Caretable-Design. Diese Datei wird nicht mehr gestartet und nicht weiter
+gepflegt; sie bleibt vorerst als Rückfallebene liegen.
+
 TTS Studio — GUI für die Google-Sheets→ElevenLabs-Pipeline.
 
 Start:  python tts_gui.py   (oder per Doppelklick über die "TTS Studio.app",

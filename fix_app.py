@@ -2,6 +2,9 @@
 """
 fix_app.py — Baut "TTS Studio.app" mit garantiert sauberen (LF) Zeilenenden neu.
 
+Die App startet tts_studio_web.py — die Oberfläche im Caretable-Design
+(natives Fenster mit HTML aus webui/).
+
 Nutzt Python statt Heredocs, damit Windows-Zeilenenden (CRLF) ausgeschlossen sind —
 die sind die häufigste Ursache dafür, dass ein Bundle beim Doppelklick stumm nichts tut.
 
@@ -63,7 +66,7 @@ if [ ! -x "$PYBIN" ]; then
     PYBIN="$(command -v python3)"
 fi
 LOGFILE="{PROJECT_DIR}/.tts_gui_error.log"
-if ! "$PYBIN" tts_gui.py 2> "$LOGFILE"; then
+if ! "$PYBIN" tts_studio_web.py 2> "$LOGFILE"; then
     if [ -s "$LOGFILE" ]; then
         osascript -e "display dialog \\"TTS Studio konnte nicht starten:\\n\\n$(cat "$LOGFILE" | tail -c 900)\\" buttons {{\\"OK\\"}} with icon stop with title \\"TTS Studio\\""
     fi

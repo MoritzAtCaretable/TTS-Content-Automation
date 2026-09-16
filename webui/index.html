@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TTS Studio</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="shell">
+
+  <!-- ═══════════ Kopfzeile ═══════════ -->
+  <div class="head">
+    <img src="assets/brand/app-icon.png" alt="">
+    <div class="ttl">
+      <h1>TTS Studio</h1>
+      <div class="sub">Sprachausgabe aus dem Google Sheet — generieren, prüfen, anhören</div>
+    </div>
+    <div class="tools">
+      <div class="badge">
+        <div class="dot" id="shDot"></div>
+        <div class="lbl">Sheet</div>
+        <div class="val" id="shVal">…</div>
+      </div>
+      <button class="btn quiet" id="btnUpdate">
+        <svg viewBox="0 0 42.717 42.688" width="16" height="16" fill="currentColor"><path d="M1.579,0H5.595A1.016,1.016,0,0,1,6.611,1.065l-.339,7.01A21.006,21.006,0,1,1,8.2,37.275,1.016,1.016,0,0,1,8.158,35.8l2.88-2.88a1.016,1.016,0,0,1,1.387-.047A14.907,14.907,0,1,0,9.9,13.366l8.6-.412a1.016,1.016,0,0,1,1.065,1.016v4.016A1.016,1.016,0,0,1,18.547,19H1.579A1.016,1.016,0,0,1,.562,17.985V1.016A1.016,1.016,0,0,1,1.579,0Z" transform="translate(-0.563)"></path></svg>
+        Update suchen
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════ Scroll-Inhalt ═══════════ -->
+  <div class="wrap ct-scroll">
+
+    <div class="row2">
+      <!-- ElevenLabs -->
+      <div class="card">
+        <h2>ElevenLabs</h2>
+        <div class="hint">Stimmmodell für den Lauf</div>
+        <div class="modelrow">
+          <div class="mlbl">Voice-Modell</div>
+          <label class="field click">
+            <div style="flex:1;min-width:0">
+              <div class="cap">Modell</div>
+              <select id="model"></select>
+            </div>
+            <svg viewBox="0 0 52.475 30" width="17" height="10" fill="var(--ct_A2)" style="flex:none"><path d="M20.956,26.231,1.1,6.391A3.75,3.75,0,0,1,6.413,1.1l22.5,22.48a3.743,3.743,0,0,1,.109,5.171L6.428,51.382a3.75,3.75,0,0,1-5.311-5.3Z" transform="translate(52.475 0) rotate(90)"></path></svg>
+          </label>
+        </div>
+      </div>
+
+      <!-- Zielordner -->
+      <div class="card">
+        <h2>Zielordner</h2>
+        <div class="hint">Hier landen die fertigen Opus-Dateien</div>
+        <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
+          <div class="field" style="flex:1;min-width:0">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="var(--tx2)" style="flex:none"><path d="M3 7.2A2.2 2.2 0 0 1 5.2 5h3.5l1.9 2.4H19a2.2 2.2 0 0 1 2.2 2.2v7.6A2.2 2.2 0 0 1 19 19.4H5.2A2.2 2.2 0 0 1 3 17.2Z"></path></svg>
+            <div class="path" id="folder" title=""></div>
+          </div>
+          <button class="btn turq" id="btnFolder" style="height:52px;padding:0 20px">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2 2 0 0 1 5 5.5h3.6l1.8 2.2H19a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path><path d="M12 10.5v6M9 13.5l3-3 3 3"></path></svg>
+            Durchsuchen…
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════ Sheet-Zeilen ═══════════ -->
+    <div class="card" style="padding-bottom:18px">
+      <div style="display:flex;align-items:flex-start;gap:16px">
+        <div style="flex:1;min-width:0">
+          <h2>Sheet-Zeilen</h2>
+          <div class="hint">Anhaken bestimmt, was generiert wird — die Auswahl gilt genau so</div>
+        </div>
+        <button class="btn quiet" id="btnReload">
+          <svg viewBox="0 0 42.717 42.688" width="16" height="16" fill="currentColor"><path d="M1.579,0H5.595A1.016,1.016,0,0,1,6.611,1.065l-.339,7.01A21.006,21.006,0,1,1,8.2,37.275,1.016,1.016,0,0,1,8.158,35.8l2.88-2.88a1.016,1.016,0,0,1,1.387-.047A14.907,14.907,0,1,0,9.9,13.366l8.6-.412a1.016,1.016,0,0,1,1.065,1.016v4.016A1.016,1.016,0,0,1,18.547,19H1.579A1.016,1.016,0,0,1,.562,17.985V1.016A1.016,1.016,0,0,1,1.579,0Z" transform="translate(-0.563)"></path></svg>
+          Neu laden
+        </button>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin-top:16px">
+        <button class="pill" data-sel="open">Nur offene</button>
+        <button class="pill" data-sel="review">Nur Review</button>
+        <button class="pill" data-sel="all">Alle</button>
+        <button class="pill" data-sel="none">Keine</button>
+        <div style="flex:1"></div>
+        <div style="font-size:14px;color:var(--tx2)" id="selText">Noch nicht geladen.</div>
+      </div>
+
+      <div class="tablebox">
+        <div class="grid thead">
+          <div></div><div>Zeile</div><div>ID</div><div>Text</div><div>Modus</div><div>Status</div>
+        </div>
+        <div class="tbody ct-scroll" id="tbody"></div>
+      </div>
+      <div class="grip" data-grip="--tab-h" data-min="140"></div>
+    </div>
+
+    <div class="row3">
+      <!-- ═══════════ Neue Texte ═══════════ -->
+      <div class="card">
+        <h2>Neue Texte</h2>
+        <div class="hint">Hängt neue Zeilen unten ans Sheet an — eine Zeile im Feld = ein Text</div>
+
+        <div class="newgrid">
+          <label class="stack" style="flex:1;min-width:0">
+            <div class="cap">ID-Präfix</div>
+            <input id="prefix" type="text" placeholder="z.B. Buchstaben" spellcheck="false">
+          </label>
+          <label class="stack" style="flex:none;width:210px;display:flex;align-items:center;gap:10px;cursor:pointer">
+            <div style="flex:1">
+              <div class="cap">Modus</div>
+              <select id="newMode">
+                <option>Einzelwort</option>
+                <option>Normal</option>
+              </select>
+            </div>
+            <svg viewBox="0 0 52.475 30" width="16" height="9" fill="var(--ct_A2)" style="flex:none"><path d="M20.956,26.231,1.1,6.391A3.75,3.75,0,0,1,6.413,1.1l22.5,22.48a3.743,3.743,0,0,1,.109,5.171L6.428,51.382a3.75,3.75,0,0,1-5.311-5.3Z" transform="translate(52.475 0) rotate(90)"></path></svg>
+          </label>
+        </div>
+
+        <textarea id="newText" spellcheck="false" placeholder="Wäsche&#10;Handtuch&#10;eigene_id | Wohin gehört das Handtuch?"></textarea>
+
+        <div class="addfoot">
+          <div class="note">Eine Zeile = ein Text, Status „todo“. Die Nummern laufen automatisch weiter.<br>Eigene ID je Zeile: ID | Text</div>
+          <button class="btn turq tall" id="btnAdd">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+            Ins Sheet einfügen
+          </button>
+        </div>
+      </div>
+
+      <!-- ═══════════ Aktionen ═══════════ -->
+      <div class="card">
+        <h2>Aktionen</h2>
+        <div class="hint">Sheet und Review-Seite öffnen</div>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">
+          <button class="btn quiet tall" id="btnSheet" style="justify-content:flex-start">
+            <svg viewBox="0 0 49.876 44.334" width="17" height="15" fill="currentColor"><path d="M22.168,36V28.89l11.083-11V13.854H21.474A2.084,2.084,0,0,1,19.4,11.776V0H2.078A2.073,2.073,0,0,0,0,2.078V42.256a2.073,2.073,0,0,0,2.078,2.078H31.172a2.073,2.073,0,0,0,2.078-2.078V38.792l-11.083-.01ZM33.25,10.555a2.072,2.072,0,0,0-.606-1.463L24.167.606A2.077,2.077,0,0,0,22.7,0h-.528V11.083H33.25ZM24.938,30.043v5.978h5.974l14-14.1-5.878-5.878-14.1,13.995ZM49.23,14.489l-2.76-2.76a2.205,2.205,0,0,0-3.118,0l-2.36,2.36,5.878,5.878,2.36-2.36A2.2,2.2,0,0,0,49.23,14.489Z"></path></svg>
+            Google Sheet öffnen
+          </button>
+          <button class="btn quiet tall" id="btnReview" style="justify-content:flex-start">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13v-1a8 8 0 0 1 16 0v1"></path><path d="M4 13h2.4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H5.6A1.6 1.6 0 0 1 4 17.4Z"></path><path d="M20 13h-2.4a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h.8a1.6 1.6 0 0 0 1.6-1.6Z"></path></svg>
+            Review-Seite öffnen
+          </button>
+          <button class="btn danger tall" id="btnResetReview" style="justify-content:flex-start">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9.5 7V4.8h5V7M6.4 7l1 12.2h9.2L17.6 7"></path></svg>
+            Review zurücksetzen
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════ Protokoll ═══════════ -->
+    <div class="card" style="padding-bottom:18px">
+      <div style="display:flex;align-items:flex-end;gap:14px">
+        <div style="flex:1">
+          <h2>Protokoll</h2>
+          <div class="hint">Live-Ausgabe des Laufs</div>
+        </div>
+      </div>
+      <div class="log ct-scroll" id="log"></div>
+      <div class="grip" data-grip="--log-h" data-min="120"></div>
+    </div>
+
+  </div>
+
+  <!-- ═══════════ Gepinnter Footer ═══════════ -->
+  <div class="foot">
+    <div class="info">
+      <div class="line">
+        <div class="state" id="state">Bereit</div>
+        <div class="scope" id="scope"></div>
+      </div>
+      <div class="bar" id="bar"><div id="barFill"></div></div>
+    </div>
+    <button class="start" id="btnStart">
+      <svg viewBox="0 0 29.195 33.368" width="16" height="18" fill="currentColor"><path d="M27.658 13.99 4.718.428A3.111 3.111 0 0 0 0 3.12v27.117a3.125 3.125 0 0 0 4.718 2.692l22.94-13.555a3.125 3.125 0 0 0 0-5.384"></path></svg>
+      Generierung starten
+    </button>
+    <button class="stop" id="btnStop" title="Abbrechen" disabled>
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>
+    </button>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="modal"></div>
+<script src="app.js"></script>
+</body>
+</html>
