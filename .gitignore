@@ -28,3 +28,7 @@ __pycache__/
 # ── Betriebssystem ──
 .DS_Store
 Thumbs.db
+
+# Lokale Audit-Ergebnisse und Entwicklungsumgebung
+audit/
+.claude/

@@ -5,6 +5,10 @@ automatischer Qualitätskontrolle (Whisper-Transkription, Pausen- und Abschnitt-
 Gemini-Naturalness-Check), Postprocessing (Normalisierung, Opus-Export) und einer
 Review-Oberfläche zum Anhören.
 
+Die Bedienoberfläche läuft als natives Fenster im Caretable-Design (HTML/CSS in
+`webui/`, angezeigt über WKWebView bzw. WebView2) — die Fachlogik liegt
+unverändert in `sheets_to_elevenlabs_qc_local.py`.
+
 ---
 
 ## Voraussetzungen
@@ -13,7 +17,7 @@ Review-Oberfläche zum Anhören.
   (Vorlage: `TTS_Vorlage.xlsx`)
 - **Service-Account-Datei** (`service_account.json`) mit **Bearbeiter**-Zugriff auf das Sheet
 - **API-Keys** für ElevenLabs und Google Gemini
-- **GitHub-Zugriff** auf dieses (private) Repo
+- **GitHub-Zugriff** auf dieses Repo (öffentlich — Lesen/Updaten braucht keinen Token)
 
 > Python, Git und ffmpeg müssen NICHT vorab installiert sein — die Installer
 > kümmern sich bei Bedarf selbst darum.
@@ -96,6 +100,10 @@ mehr öffnen, um zu sehen oder zu bestimmen, was generiert wird.
 - **Alle** / **Keine** — Komplettauswahl.
 - **⟳ Neu laden** holt den aktuellen Sheet-Stand; nach jedem Lauf passiert das automatisch.
 
+Ein laufender Vorgang lässt sich über den Stopp-Knopf rechts neben
+**Generierung starten** abbrechen; der Fortschrittsbalken zeigt, wie viele der
+ausgewählten Zeilen schon verarbeitet sind.
+
 Wichtig: Eine Auswahl in der Tabelle **gilt genau so** — auch für Zeilen, die schon
 `passed` sind. So lässt sich eine fertige Zeile neu generieren, ohne im Sheet den
 Status zu ändern. Ist die Tabelle leer (z.B. kein Sheet-Zugriff), verhält sich der
@@ -129,6 +137,62 @@ Die Karte **Neue Texte** hängt neue Zeilen unten ans Sheet an — ohne das Shee
   und Zeitstempel zurück.
 - Alle Audios landen im gewählten Zielordner; den Status liest man im Sheet
   oder in der Review-Seite (mit Playern und Filter).
+
+### Review-Seite
+
+`review.html` wird nach jedem Lauf neu erzeugt und im Browser geöffnet
+(Aktionen → **Review-Seite öffnen**). Sie zeigt pro Audio eine Karte mit
+Abspieler, Text, Whisper-Transkript und den Kennzahlen (WER, Gemini, Modell) und
+lässt sich nach *Alle / Passed / Review needed* filtern. Die Einträge sammeln
+sich an, bis man in der App **Review zurücksetzen** drückt.
+
+### Qualitätsprüfung
+
+Eine aktivierte Pflichtprüfung muss erfolgreich abgeschlossen sein, bevor ein Audio
+`passed` erhält. Jede Prüfung speichert **bestanden**, **auffällig**, **Prüffehler**
+oder **nicht ausgeführt**. Gemini-Ausfälle, ungültige Antworten und unklare Urteile
+führen zu `review needed` mit Begründung. Bei technischen Prüffehlern bleibt das
+Audio erhalten; für dieses Item werden keine weiteren TTS-Versuche gestartet.
+Vorübergehende Gemini-Fehler werden begrenzt auf demselben Audio erneut geprüft.
+
+Der Textvergleich normalisiert Großschreibung, Satzzeichen, häufige Abkürzungen
+(`z. B.`, `u. a.`, `bzw.`, `usw.`), deutsche Kardinalzahlen bis 999999 und häufige
+Maßeinheiten im Zahlenkontext. Zum Beispiel gelten `3 cm` und `drei Zentimetern`
+als gleich. Dezimalwerte und Vorzeichen bleiben unterscheidbar. Für Datumsangaben,
+Ordnungszahlen, Brüche oder mehrdeutige Abkürzungen gibt es keine umfassende
+Sprachnormalisierung; solche Abweichungen benötigen ggf. menschliche Prüfung.
+Nach der Normalisierung verhindern **alle verbleibenden Wortabweichungen** die
+automatische Freigabe, auch bei niedriger WER. Zahlen, Einheiten und Negationen
+werden im Befund als kritisch hervorgehoben. Ein ASR-Unterschied ist dabei ein
+Prüfhinweis und noch kein sicherer Beweis für einen Aussprachefehler.
+
+Natürlichkeit wird standardmäßig mit **`gemini-3.8-flash`** geprüft. Über
+`GEMINI_MODEL` in `.env` lässt sich ein anderes verfügbares Audiomodell wählen.
+Das Prompt unterscheidet Inhalt, Aussprache, abgeschnittene Laute, Tempo, Prosodie,
+Artefakte und Hörbarkeit. Normale Sprechvarianten und ruhige Vortragsweise sind
+keine Fehler. Unsichere Urteile führen zur manuellen Prüfung. Gemini liefert
+validiertes JSON; fehlende oder widersprüchliche Angaben gelten als Prüffehler.
+
+Die gespeicherte Note ist weiterhin eine feste Zuordnung (`none` = 9, `minor` = 7,
+`major` = 3), keine kalibrierte Qualitätsmessung. `GEMINI_MIN_SCORE = 7` akzeptiert
+kleinere Mängel; 8 lehnt auch diese ab. Bestätigte schwere Mängel werden immer
+abgelehnt. **QC-Befunde** in der Review-Seite zeigen Gründe und Defekte auch bei
+bestandenen Aufnahmen sowie Prüfmodell und Promptversion. Alte Review-Einträge
+bleiben lesbar und werden nicht nachträglich als neu geprüft ausgegeben.
+
+Optional können im Sheet die Spalten `qc_state` und `qc_details` ergänzt werden.
+Ohne diese Spalten werden die Details lokal in `review_data.json` gespeichert;
+die bisherigen Statuswerte und Pflichtspalten bleiben kompatibel.
+
+Die Regressionstests laufen ohne API-Aufrufe oder Modelldownloads:
+
+```
+venv/bin/python -m unittest discover -s tests -v
+```
+
+Unter Windows entsprechend `venv\Scripts\python -m unittest discover -s tests -v`.
+Ein Qualitätsvorteil von Gemini 3.8 gegenüber früheren Modellen muss anhand
+bewerteter Hörbeispiele geprüft werden; die Modellumstellung allein garantiert ihn nicht.
 
 ---
 
@@ -169,7 +233,10 @@ ausführen (`./install.sh` bzw. `install.bat`).
 | Datei | Zweck | System |
 |---|---|---|
 | `sheets_to_elevenlabs_qc_local.py` | Pipeline (Kern) | beide |
-| `tts_gui.py` | Grafische Oberfläche | beide |
+| `tts_studio_web.py` | Startet das App-Fenster | beide |
+| `webui_api.py` | Brücke Oberfläche ↔ Fachlogik | beide |
+| `webui/` | Oberfläche (HTML/CSS/JS, Schriften, Icon) | beide |
+| `tts_gui.py` | Frühere CustomTkinter-Oberfläche (abgelöst) | beide |
 | `install.sh` / `fix_app.py` | Einrichtung / App-Bau | macOS |
 | `install.bat` / `TTS_Studio.bat` | Einrichtung / Starter | Windows |
 | `requirements.txt` | Python-Abhängigkeiten | beide |

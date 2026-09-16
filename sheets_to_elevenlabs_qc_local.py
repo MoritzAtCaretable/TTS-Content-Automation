@@ -43,6 +43,11 @@ from pydub import AudioSegment
 from pydub.silence import detect_silence, detect_nonsilent
 from google import genai
 from google.genai import types
+from tts_quality import (
+    CheckResult, QualityResult, compare_text, normalize_for_compare, word_error_rate,
+    NATURALNESS_SCHEMA, NATURALNESS_SYSTEM_PROMPT, GEMINI_PROMPT_VERSION,
+    SCORE_BY_SEVERITY, naturalness_prompt, parse_naturalness,
+)
 
 # .env laden (falls python-dotenv installiert ist). Ohne .env greift os.getenv auf
 # echte Umgebungsvariablen zurück – der Rest funktioniert weiterhin.
@@ -77,7 +82,13 @@ TREAT_EMPTY_STATUS_AS_TODO = True   # leere Status-Zelle wie "todo" behandeln
 # solche Auswahl übergeht den Status-Filter bewusst — so lässt sich eine bereits
 # fertige Zeile erneut generieren, ohne im Sheet den Status zu ändern.
 # None/leer = normales Verhalten (alle Zeilen nach Status-Filter).
+# TTS_ONLY_ROWS ist der Weg, auf dem die Oberfläche die Auswahl an den
+# Subprozess übergibt (z.B. "5,9,12").
 ONLY_ROWS = None
+_env_rows = os.getenv("TTS_ONLY_ROWS", "").strip()
+if _env_rows:
+    ONLY_ROWS = [int(n) for n in _env_rows.replace(";", ",").split(",")
+                 if n.strip().isdigit()]
 
 # ElevenLabs — Keys/Voice kommen aus der .env (siehe .env.example)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
@@ -138,15 +149,13 @@ WHISPER_LANGUAGE = "de"
 
 # Gemini (naturalness check) — Key kommt aus der .env
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-# Hinweis: flash-lite hat ein höheres Free-Tier-Tageslimit. Exakte ID in AI Studio prüfen.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 ENABLE_GEMINI_CHECK = True
 GEMINI_MIN_SCORE = 7
 # Schweregrad → interne Note. Der Code benotet anhand des Schweregrads, nicht das Modell.
 # Mit GEMINI_MIN_SCORE = 7 (Default): none & minor bestehen, major fällt durch.
 # Strenger (auch minor soll durchfallen): GEMINI_MIN_SCORE = 8.
-# Lockerer (alles besteht): GEMINI_MIN_SCORE = 0.
-SCORE_BY_SEVERITY = {"none": 9, "minor": 7, "major": 3}
+# Bestätigte major-Defekte werden unabhängig von diesem Wert nie freigegeben.
 GEMINI_MAX_RETRIES = 4
 GEMINI_MIN_INTERVAL_SEC = 13
 
@@ -160,7 +169,8 @@ REVIEW_DATA_FILE = "review_data.json"   # akkumulierte Einträge für die Review
 
 # QC thresholds
 MAX_RETRIES = 3
-WER_THRESHOLD = 0.15
+# WER ist eine Kennzahl, keine Freigabegrenze: verbleibende Wortabweichungen
+# brauchen nach der Normalisierung eine neue Aufnahme oder menschliche Prüfung.
 MAX_SILENCE_MS = 1500
 SILENCE_THRESHOLD_DB = -40
 
@@ -249,31 +259,6 @@ def build_filename(row: dict) -> str:
     content_id = re.sub(r"[^\w\-]", "", row.get("id", "").strip()) or "item"
     slug = short_slug(row.get("text", ""))
     return f"{num}_{content_id}_{slug}{ext}"
-
-
-def normalize_for_compare(s: str) -> list:
-    s = s.lower()
-    s = re.sub(r"[^\w\sÄÖÜäöüß]", " ", s)
-    return s.split()
-
-
-def word_error_rate(reference: str, hypothesis: str) -> float:
-    ref_words = normalize_for_compare(reference)
-    hyp_words = normalize_for_compare(hypothesis)
-    if not ref_words:
-        return 0.0
-    d = [[0] * (len(hyp_words) + 1) for _ in range(len(ref_words) + 1)]
-    for i in range(len(ref_words) + 1):
-        d[i][0] = i
-    for j in range(len(hyp_words) + 1):
-        d[0][j] = j
-    for i in range(1, len(ref_words) + 1):
-        for j in range(1, len(hyp_words) + 1):
-            if ref_words[i - 1] == hyp_words[j - 1]:
-                d[i][j] = d[i - 1][j - 1]
-            else:
-                d[i][j] = 1 + min(d[i - 1][j], d[i][j - 1], d[i - 1][j - 1])
-    return d[len(ref_words)][len(hyp_words)] / len(ref_words)
 
 
 # ─────────────────────────────────────────────
@@ -675,188 +660,128 @@ def _audio_mime(path: str) -> str:
 
 
 def check_naturalness(audio_path: str, original_text: str, gemini_client, single_word_mode: bool = False):
-    """Have Gemini listen to the audio and rate its naturalness. Returns (score, reason)."""
+    """Structured audio assessment with strict local validation."""
     with open(audio_path, "rb") as f:
         audio_bytes = f.read()
-
-    if single_word_mode:
-        focus = """This is a SINGLE German word recorded in isolation. Listen for these defects:
-- Word is rushed or spoken too fast
-- Word is clipped / cut off at the start or end (a syllable missing or truncated)
-- Mispronunciation or wrong-language pronunciation (e.g. English instead of German)
-- Robotic, buzzy, or audible digital artifacts
-- Word is barely audible or trails off"""
-    else:
-        focus = """This is a German sentence or phrase. Listen for these defects:
-- Robotic or flat intonation, unnatural prosody
-- OVER-exaggerated, overacted, or theatrical delivery (too much emphasis/drama)
-- Rushed sections or unnaturally long pauses
-- Mispronunciation or wrong-language pronunciation
-- Wrong or unnatural emphasis
-- Audible digital artifacts or clipping"""
-
-    prompt = f"""You are a STRICT quality inspector for German text-to-speech audio.
-The word/text SHOULD be: "{original_text}"
-
-{focus}
-
-Work in two steps:
-STEP 1 — Listen critically and write down EVERY defect you actually hear. Do not assume it
-is fine; actively look for problems. If you truly hear none, write "none".
-
-STEP 2 — Classify the overall severity with ONE of these labels:
-- none  : no audible issue at all; sounds like a careful human recording
-- minor : a small imperfection that is still perfectly usable
-- major : a clearly noticeable, distracting or wrong delivery — this INCLUDES being
-          rushed, clipped, mispronounced, robotic, OR over-exaggerated / overacted
-
-Be consistent: if you listed ANY real defect in STEP 1, the severity CANNOT be "none".
-If the delivery is exaggerated or overacted, that is at least "major".
-
-Respond in EXACTLY this format:
-DEFECTS: <what you heard, or "none">
-SEVERITY: <none|minor|major>
-REASON: <one short sentence>
-
-Do not include anything else."""
-
     response = gemini_client.models.generate_content(
         model=GEMINI_MODEL,
-        contents=[
-            types.Part.from_bytes(data=audio_bytes, mime_type=_audio_mime(audio_path)),
-            prompt,
-        ],
-        config=types.GenerateContentConfig(temperature=0.0),
+        contents=[types.Part.from_bytes(data=audio_bytes, mime_type=_audio_mime(audio_path)),
+                  naturalness_prompt(original_text, single_word_mode)],
+        config=types.GenerateContentConfig(
+            system_instruction=NATURALNESS_SYSTEM_PROMPT,
+            temperature=0.0,
+            response_mime_type="application/json",
+            response_json_schema=NATURALNESS_SCHEMA,
+        ),
     )
-
-    text = response.text.strip()
-    reason_match = re.search(r"REASON:\s*(.+)", text)
-    defects_match = re.search(r"DEFECTS:\s*(.+)", text)
-    sev_match = re.search(r"SEVERITY:\s*(none|minor|major)", text, re.IGNORECASE)
-
-    defects = defects_match.group(1).strip() if defects_match else ""
-    has_defect = bool(defects) and defects.lower() not in ("none", "none.", "keine", "keine.")
-
-    severity = sev_match.group(1).lower() if sev_match else None
-    # Konsistenz erzwingen: Defekt gelistet, aber Schweregrad none/fehlt → mindestens minor
-    if severity is None:
-        severity = "minor" if has_defect else "none"
-    elif severity == "none" and has_defect:
-        severity = "minor"
-
-    # Der Code vergibt die Note anhand des Schweregrads (nicht das Modell selbst).
-    # SCORE_BY_SEVERITY + GEMINI_MIN_SCORE steuern zusammen, was noch durchkommt.
-    score = SCORE_BY_SEVERITY[severity]
-
-    reason = reason_match.group(1).strip() if reason_match else "no reason given"
-    reason = f"[{severity}] {reason}"
-    if has_defect:
-        reason = f"{reason} [Defekte: {defects}]"
-    return score, reason
+    assessment = parse_naturalness(response.text)
+    details = {**assessment, "model": GEMINI_MODEL, "prompt_version": GEMINI_PROMPT_VERSION}
+    if assessment["assessment"] != "assessed":
+        return CheckResult("error", "Nicht sicher beurteilbar: " + assessment["reason"], details=details)
+    score = SCORE_BY_SEVERITY[assessment["severity"]]
+    details["score"] = score
+    # A confirmed major defect is never auto-approved by a permissive threshold.
+    state = "failed" if assessment["severity"] == "major" or score < GEMINI_MIN_SCORE else "passed"
+    return CheckResult(state, assessment["reason"], details=details)
 
 
 def check_naturalness_with_retry(audio_path, original_text, gemini_client, single_word_mode=False):
-    """check_naturalness mit Throttling + automatischem Retry bei 429/503."""
+    """Retry the SAME audio on transient API/response errors, never assume success."""
     global _gemini_last_call, _gemini_disabled_for_run
+    details = {"model": GEMINI_MODEL, "prompt_version": GEMINI_PROMPT_VERSION}
     if _gemini_disabled_for_run:
-        return None
-
+        return CheckResult("error", "Gemini-Tageslimit erschöpft; Prüfung ausstehend", details=details)
+    last_error = "Kein Prüfergebnis"
     for attempt in range(1, GEMINI_MAX_RETRIES + 1):
-        elapsed = time.time() - _gemini_last_call
+        elapsed = time.monotonic() - _gemini_last_call
         if elapsed < GEMINI_MIN_INTERVAL_SEC:
             time.sleep(GEMINI_MIN_INTERVAL_SEC - elapsed)
         try:
-            result = check_naturalness(audio_path, original_text, gemini_client, single_word_mode)
-            _gemini_last_call = time.time()
-            return result
+            return check_naturalness(audio_path, original_text, gemini_client, single_word_mode)
         except Exception as e:
-            _gemini_last_call = time.time()
             err = str(e)
+            last_error = err[:300]
             if "PerDay" in err or "GenerateRequestsPerDay" in err:
-                print("      ⚠ Gemini Tages-Limit erschöpft — Naturalness-Check wird für den Rest des Laufs übersprungen.")
                 _gemini_disabled_for_run = True
-                return None
+                last_error = "Gemini-Tageslimit erschöpft; Prüfung ausstehend"
+                break
+            if attempt == GEMINI_MAX_RETRIES:
+                break
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
                 wait = min(_parse_retry_delay(err, 30), 70)
-                print(f"      ⏳ Gemini Rate-Limit — warte {wait}s, dann erneut ({attempt}/{GEMINI_MAX_RETRIES})...")
-                time.sleep(wait)
-                continue
-            if "503" in err or "UNAVAILABLE" in err:
+            elif "503" in err or "UNAVAILABLE" in err:
                 wait = min(5 * (2 ** (attempt - 1)), 60)
-                print(f"      ⏳ Gemini überlastet (503) — warte {wait}s, dann erneut ({attempt}/{GEMINI_MAX_RETRIES})...")
-                time.sleep(wait)
-                continue
-            print(f"      ⚠ Gemini-Fehler (übersprungen): {err[:160]}")
-            return None
-
-    print(f"      ⚠ Gemini nach {GEMINI_MAX_RETRIES} Versuchen aufgegeben (übersprungen).")
-    return None
+            elif isinstance(e, ValueError) and attempt < 2:
+                # One corrective retry for malformed/inconsistent model output.
+                wait = 0
+            else:
+                break
+            print(f"      ⏳ Gemini-Prüfung erneut auf demselben Audio ({attempt}/{GEMINI_MAX_RETRIES}): {last_error}")
+            time.sleep(wait)
+        finally:
+            _gemini_last_call = time.monotonic()
+    return CheckResult("error", "Gemini-Prüfung fehlgeschlagen: " + last_error, details=details)
 
 
 def quality_check(audio_path, original_text, whisper_model, gemini_client=None,
                   skip_silence=False, single_word_mode=False):
-    """Returns (passed, reason, wer, silence_ms, gemini_score, transcript)."""
-    # 0. Truncation-Check A: Plausibilität der Dauer.
-    # Ist das Audio deutlich kürzer als die Sprechzeit, die der Text braucht,
-    # wurde die Generierung vermutlich mittendrin abgebrochen.
+    """Return explicit per-check states; unknown mandatory results never pass."""
+    checks = {name: CheckResult("skipped", "Wegen vorheriger Prüfung nicht ausgeführt")
+              for name in ("duration", "transcription", "text", "silence", "gemini")}
+    if skip_silence:
+        checks["silence"] = CheckResult("skipped", "Einzelwort: separater Sanity-Check", required=False)
+    if not ENABLE_GEMINI_CHECK:
+        checks["gemini"] = CheckResult("skipped", "In der Konfiguration deaktiviert", required=False)
+    qc = QualityResult(checks)
     try:
         duration_ms = len(AudioSegment.from_file(audio_path))
         expected_ms = (len(original_text) / EXPECTED_CHARS_PER_SEC) * 1000
+        if duration_ms <= 0:
+            checks["duration"] = CheckResult("failed", "Leeres Audio")
+            return qc
         if not single_word_mode and expected_ms > 800 and duration_ms < expected_ms * MIN_DURATION_RATIO:
-            return (False,
-                    f"Audio vermutlich abgebrochen ({duration_ms/1000:.1f}s, erwartet ~{expected_ms/1000:.1f}s)",
-                    1.0, 0, 0, "")
+            checks["duration"] = CheckResult("failed", f"Audio vermutlich abgebrochen ({duration_ms/1000:.1f}s, erwartet ~{expected_ms/1000:.1f}s)")
+            return qc
+        checks["duration"] = CheckResult("passed", "Dauer plausibel", details={"duration_ms": duration_ms})
     except Exception as e:
-        print(f"      ⚠ Dauer-Check fehlgeschlagen: {e}")
+        checks["duration"] = CheckResult("error", f"Audio/Dauer nicht prüfbar: {e}")
+        return qc
 
-    # 1. Transcription check
     try:
-        transcript = transcribe_audio(audio_path, whisper_model)
-        wer = word_error_rate(original_text, transcript)
+        qc.transcript = transcribe_audio(audio_path, whisper_model).strip()
+        checks["transcription"] = CheckResult("passed", "Transkription abgeschlossen")
     except Exception as e:
-        return False, f"transcription failed: {e}", 1.0, 0, 0, ""
+        checks["transcription"] = CheckResult("error", f"Transkription fehlgeschlagen: {e}")
+        return qc
+    comparison = compare_text(original_text, qc.transcript)
+    qc.wer = comparison["wer"]
+    checks["text"] = CheckResult("passed" if comparison["passed"] else "failed",
+                                  comparison["reason"], details=comparison)
+    if not comparison["passed"]:
+        return qc
 
-    transcript = transcript.strip()
-    if wer > WER_THRESHOLD:
-        return False, f"WER too high ({wer:.0%})", wer, 0, 0, transcript
-
-    # 1b. Truncation-Check B: Endet das Audio mit dem richtigen Text?
-    # Die WER-Schwelle lässt bei langen Sätzen ein fehlendes Wort am Ende durch —
-    # genau das passiert aber bei abgeschnittenen Enden. Deshalb explizit prüfen,
-    # ob die letzten Wörter des Originals im Transkript vorkommen.
-    ref_words = normalize_for_compare(original_text)
-    hyp_words = normalize_for_compare(transcript)
-    if len(ref_words) >= 3:
-        tail = ref_words[-2:]
-        hyp_tail = hyp_words[-4:] if len(hyp_words) >= 4 else hyp_words
-        missing = [w for w in tail if w not in hyp_tail]
-        if missing:
-            return (False,
-                    f"Ende fehlt vermutlich (letzte Wörter '{' '.join(tail)}' nicht am Transkript-Ende: '...{' '.join(hyp_words[-4:])}')",
-                    wer, 0, 0, transcript)
-
-    # 2. Silence check
-    if skip_silence:
-        longest_silence = 0
-    else:
+    if not skip_silence:
         try:
-            longest_silence = check_silences(audio_path)
+            qc.silence_ms = check_silences(audio_path)
+            checks["silence"] = CheckResult(
+                "failed" if qc.silence_ms > MAX_SILENCE_MS else "passed",
+                f"Längste innere Pause: {qc.silence_ms} ms")
         except Exception as e:
-            print(f"      ⚠ silence check failed: {e}")
-            longest_silence = 0
-        if longest_silence > MAX_SILENCE_MS:
-            return False, f"long silence ({longest_silence}ms)", wer, longest_silence, 0, transcript
+            checks["silence"] = CheckResult("error", f"Pausenprüfung fehlgeschlagen: {e}")
+        if checks["silence"].state != "passed":
+            return qc
 
-    # 3. Gemini naturalness check
-    gemini_score = 0
-    if ENABLE_GEMINI_CHECK and gemini_client is not None and not _gemini_disabled_for_run:
-        result = check_naturalness_with_retry(audio_path, original_text, gemini_client, single_word_mode)
-        if result is not None:
-            gemini_score, reason = result
-            if gemini_score < GEMINI_MIN_SCORE:
-                return False, f"Gemini: {gemini_score}/10 — {reason}", wer, longest_silence, gemini_score, transcript
-
-    return True, "ok", wer, longest_silence, gemini_score, transcript
+    if ENABLE_GEMINI_CHECK:
+        if gemini_client is None:
+            checks["gemini"] = CheckResult("error", "Gemini-Prüfer nicht verfügbar")
+        else:
+            try:
+                result = check_naturalness_with_retry(audio_path, original_text, gemini_client, single_word_mode)
+                checks["gemini"] = result if isinstance(result, CheckResult) else CheckResult("error", "Gemini lieferte kein gültiges Prüfergebnis")
+                qc.gemini_score = checks["gemini"].details.get("score")
+            except Exception as e:
+                checks["gemini"] = CheckResult("error", f"Gemini-Prüfung fehlgeschlagen: {e}")
+    return qc
 
 
 # ─────────────────────────────────────────────
@@ -875,7 +800,8 @@ def process_row(row, ws, header_map, whisper_model, gemini_client, counts):
     if not text:
         print(f"[Zeile {row_num}] '{label}' → kein Text, übersprungen.")
         write_back(ws, header_map, row_num,
-                   {"status": "review needed", "reason": "kein Text", "generated_at": now})
+                   {"status": "review needed", "reason": "kein Text", "generated_at": now,
+                    "qc_state": "error", "qc_details": ""})
         counts["skipped"] += 1
         return
 
@@ -889,8 +815,9 @@ def process_row(row, ws, header_map, whisper_model, gemini_client, counts):
     print(f"[Zeile {row_num}] '{label}' ({mode_note}) → {filename}")
     print(f"            \"{preview}\"")
 
-    best_attempt = None  # (path, wer, silence_ms, gemini_score, reason, score)
+    best_attempt = None  # (path, wer, silence_ms, gemini_score, reason, transcript, score)
     attempt_files = []   # alle Zwischen-Dateien dieses Items (für Aufräumen)
+    attempt_qc = {}      # Befunde immer dem zugehörigen Audioversuch zuordnen
 
     for attempt in range(1, MAX_RETRIES + 1):
         seed = random.randint(1, 1_000_000) if attempt > 1 else None
@@ -936,30 +863,40 @@ def process_row(row, ws, header_map, whisper_model, gemini_client, counts):
                 print("      ⚠ Postprocessing übersprungen (nutze unbearbeitetes Audio)")
 
         # 4. QC auf dem FINALEN (bearbeiteten) Audio
-        passed, reason, wer, silence_ms, gemini_score, transcript = quality_check(
+        qc = quality_check(
             work_path, text, whisper_model, gemini_client,
             skip_silence=single_word_mode, single_word_mode=single_word_mode
         )
+        attempt_qc[work_path] = qc.to_dict()
+        reason, wer, silence_ms = qc.reason, qc.wer, qc.silence_ms
+        gemini_score, transcript = qc.gemini_score, qc.transcript
 
-        if passed:
+        if qc.passed:
             shutil.move(work_path, final_path)
             gemini_note = f", Gemini={gemini_score}/10" if ENABLE_GEMINI_CHECK and gemini_score else ""
-            print(f"   ✅ Passed QC (WER={wer:.0%}, silence={silence_ms}ms{gemini_note}) → {filename}")
+            print(f"   ✅ Passed QC (WER={wer:.0%}, silence={silence_ms if silence_ms is not None else 'nicht geprüft'}{gemini_note}) → {filename}")
             write_back(ws, header_map, row_num, {
                 "status": "passed", "filename": filename,
                 "reason": "", "generated_at": now,
+                "qc_state": "passed", "qc_details": json.dumps(qc.to_dict(), ensure_ascii=False),
             })
             row.update({"status": "passed", "filename": filename, "reason": "",
                         "generated_at": now, "_transcript": transcript,
-                        "_wer": wer, "_gemini": gemini_score})
+                        "_wer": wer, "_gemini": gemini_score, "_qc": qc.to_dict()})
             _record_review(row)
             counts["passed"] += 1
             _cleanup(attempt_files)
             return
 
         print(f"   ✗ Failed: {reason}")
+        if qc.has_error:
+            # Infrastruktur-/Prüffehler nicht durch weitere kostenpflichtige
+            # Generierungen behandeln. Audio + offene Prüfung für Review behalten.
+            best_attempt = (work_path, wer, silence_ms, gemini_score, reason, transcript, float("inf"))
+            print("      ⚠ QC unvollständig — Audio behalten, keine weitere TTS-Generierung für dieses Item.")
+            break
         naturalness_penalty = (10 - gemini_score) / 10 if gemini_score else 0
-        score = wer + (silence_ms / 10000) + naturalness_penalty
+        score = (wer if wer is not None else 1.0) + ((silence_ms or 0) / 10000) + naturalness_penalty
         if best_attempt is None or score < best_attempt[6]:
             best_attempt = (work_path, wer, silence_ms, gemini_score, reason, transcript, score)
 
@@ -967,27 +904,34 @@ def process_row(row, ws, header_map, whisper_model, gemini_client, counts):
 
     # Alle Versuche fehlgeschlagen → bester Versuch behalten, Status "review needed"
     if best_attempt:
+        saved_qc = attempt_qc.get(best_attempt[0])
         shutil.move(best_attempt[0], final_path)
         _, b_wer, b_sil, b_gem, b_reason, b_transcript, _ = best_attempt
-        print(f"   ⚠ Alle Versuche fehlgeschlagen → als 'review needed' markiert (WER={b_wer:.0%}, Gemini={b_gem}/10)")
+        wer_note = f"{b_wer:.0%}" if b_wer is not None else "nicht geprüft"
+        print(f"   ⚠ Keine vollständige Freigabe → 'review needed' (WER={wer_note}, Gemini={b_gem if b_gem is not None else 'nicht geprüft'})")
         write_back(ws, header_map, row_num, {
             "status": "review needed", "filename": filename,
             "reason": b_reason, "generated_at": now,
+            "qc_state": "error" if saved_qc and any(c["state"] == "error" for c in saved_qc["checks"].values()) else "failed",
+            "qc_details": json.dumps(saved_qc, ensure_ascii=False) if saved_qc else "",
         })
         row.update({"status": "review needed", "filename": filename, "reason": b_reason,
                     "generated_at": now, "_transcript": b_transcript,
-                    "_wer": b_wer, "_gemini": b_gem})
+                    "_wer": b_wer, "_gemini": b_gem, "_qc": saved_qc})
         _record_review(row)
         counts["review"] += 1
     else:
         # gar kein Audio erzeugt
         print(f"   ✗ Keine Audio-Generierung möglich → review needed")
+        failed_qc = QualityResult({"generation": CheckResult("error", "Kein neues Audio erzeugt")}).to_dict()
         write_back(ws, header_map, row_num, {
             "status": "review needed", "filename": filename,
             "reason": "ElevenLabs-Generierung fehlgeschlagen", "generated_at": now,
+            "qc_state": "error", "qc_details": json.dumps(failed_qc, ensure_ascii=False),
         })
         row.update({"status": "review needed", "filename": filename,
-                    "reason": "ElevenLabs-Generierung fehlgeschlagen", "generated_at": now})
+                    "reason": "ElevenLabs-Generierung fehlgeschlagen", "generated_at": now,
+                    "_qc": failed_qc, "_wer": None, "_gemini": None, "_transcript": ""})
         _record_review(row)
         counts["failed"] += 1
     _cleanup(attempt_files)
@@ -1011,6 +955,28 @@ def _esc(s) -> str:
     """HTML-Escaping für Textinhalte."""
     return (str(s).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _review_qc_html(qc):
+    """Readable evidence, including skipped checks and accepted minor defects."""
+    if not isinstance(qc, dict):
+        return '<div class="cmeta">Älterer Eintrag: keine detaillierten QC-Befunde gespeichert.</div>'
+    labels = {"passed": "bestanden", "failed": "auffällig", "error": "Prüffehler",
+              "skipped": "nicht ausgeführt"}
+    names = {"generation": "Generierung", "duration": "Audiodauer", "transcription": "Transkription", "text": "Textvergleich",
+             "silence": "Pausen", "gemini": "Natürlichkeit"}
+    parts = []
+    for name, check in qc.get("checks", {}).items():
+        title = names.get(name, name)
+        state = labels.get(check.get("state"), "unbekannt")
+        parts.append(f'<p><strong>{_esc(title)}: {_esc(state)}</strong><br>{_esc(check.get("reason", ""))}</p>')
+        detail = check.get("details", {})
+        for defect in detail.get("defects", []):
+            parts.append(f'<p>{_esc(defect.get("category", ""))} ({_esc(defect.get("severity", ""))}): {_esc(defect.get("evidence", ""))}</p>')
+        if name == "gemini" and detail.get("model"):
+            parts.append(f'<p>Prüfmodell: {_esc(detail["model"])} · Prompt: {_esc(detail.get("prompt_version", ""))}</p>')
+    summary = "QC unvollständig / Review nötig" if qc.get("incomplete") else "QC-Befunde"
+    return f'<details class="cmeta"><summary>{summary}</summary>{"".join(parts)}</details>'
 
 
 def _load_review_data() -> dict:
@@ -1056,17 +1022,195 @@ def _record_review(row: dict):
         "transcript": row.get("_transcript", ""),
         "wer": row.get("_wer"),
         "gemini": row.get("_gemini"),
+        "qc": row.get("_qc"),
         "model": ELEVENLABS_MODEL,
     })
 
 
+# ─────────────────────────────────────────────
+# REVIEW-SEITE (Caretable-Design)
+# ─────────────────────────────────────────────
+
+_CHIP_ICON = ('<svg viewBox="0 0 24 24" width="13" height="13" fill="none" '
+              'stroke="currentColor" stroke-width="3.2" stroke-linecap="round" '
+              'stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>')
+
+# Platzhalter __NOW__, __NPASSED__, __NREVIEW__, __NALL__, __CARDS__, __EMPTYALL__
+_REVIEW_TEMPLATE = """<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TTS Review — __NOW__</title>
+<style>
+@font-face { font-family:"CardiumA-Regular"; src:url("webui/assets/fonts/CardiumARegular.woff2") format("woff2"); }
+@font-face { font-family:"CardiumA-Medium";  src:url("webui/assets/fonts/CardiumAMedium.woff2")  format("woff2"); }
+@font-face { font-family:"CardiumA-Bold";    src:url("webui/assets/fonts/CardiumABold.woff2")    format("woff2"); }
+:root{
+  --ct_font_regular:"CardiumA-Regular",-apple-system,system-ui,sans-serif;
+  --ct_font_medium:"CardiumA-Medium",-apple-system,system-ui,sans-serif;
+  --ct_font_bold:"CardiumA-Bold",-apple-system,system-ui,sans-serif;
+  --ct_A:#000F28; --ct_E1:#F5F7FC; --ct_E2:#7A818E; --ct_E3_30:#ECF1F4;
+  --ct_F1:#EE8300; --ct_correct:#64B489; --ct_fail:#F56262;
+  --green:#117875; --green-deep:#0C5F5C;
+  --app:var(--ct_E1); --card:#FFFFFF; --inset:var(--ct_E3_30); --line:#E4E9F0;
+  --tx:var(--ct_A); --tx2:var(--ct_E2); --tx3:#A7AEBA;
+  --shadow:0 .125rem .5rem rgba(0,15,40,.07);
+  --shadow-lift:0 .375rem 1.125rem rgba(0,15,40,.12);
+  --mono:"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--app);color:var(--tx);font-family:var(--ct_font_regular);font-size:15px}
+.head{display:flex;align-items:flex-start;gap:24px;padding:34px 44px 4px;flex-wrap:wrap}
+.head img{width:46px;height:46px;border-radius:11px;margin-top:4px;flex:none;box-shadow:var(--shadow)}
+.head .ttl{flex:1 1 340px;min-width:0}
+.head h1{margin:0;font-family:var(--ct_font_bold);font-size:34px;line-height:1.1;color:var(--green);letter-spacing:-.01em}
+.head .sub{font-family:var(--ct_font_medium);font-size:19px;line-height:1.35;margin-top:4px}
+.filters{display:flex;align-items:center;gap:10px;padding-top:8px;flex-wrap:wrap;flex:1 1 auto;min-width:0;justify-content:flex-end}
+.filters button{height:42px;padding:0 20px;border-radius:999px;border:0;cursor:pointer;
+  font-family:var(--ct_font_medium);font-size:15px;background:#FFFFFF;color:var(--tx);
+  box-shadow:var(--shadow);white-space:nowrap}
+.filters button.on{background:var(--green);color:#fff}
+.wrap{padding:20px 44px 28px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:20px;align-items:start}
+.card{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:20px 22px 18px;min-width:0}
+.chead{display:flex;align-items:center;gap:10px}
+.chip{display:flex;align-items:center;gap:7px;height:28px;padding:0 12px;border-radius:999px;
+  font-family:var(--ct_font_medium);font-size:13px;flex:none}
+.chip.passed{background:#DCEFE5;color:#2C7A56}
+.chip.review{background:#FCE6CC;color:#A85B00}
+.chip.other{background:var(--inset);color:var(--tx2)}
+.cid{font-family:var(--ct_font_medium);font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.player{display:flex;align-items:center;gap:12px;margin-top:16px;padding:10px 14px;border-radius:10px;background:var(--inset)}
+.play{flex:none;width:34px;height:34px;border-radius:50%;background:var(--green);display:flex;
+  align-items:center;justify-content:center;cursor:pointer}
+.play:hover{background:var(--green-deep)}
+.play .ico-play{margin-left:2px}
+.play .ico-pause{display:none}
+.play.pause .ico-play{display:none}
+.play.pause .ico-pause{display:block}
+.track{flex:1;height:6px;border-radius:999px;background:#D3DEE4;cursor:pointer}
+.track .fill{width:0;height:100%;border-radius:999px;background:var(--green)}
+.time{flex:none;font-family:var(--mono);font-size:12.5px;color:var(--tx2)}
+.missing{margin-top:16px;padding:10px 14px;border-radius:10px;background:var(--inset);
+  color:var(--ct_fail);font-size:14px}
+.ctext{font-size:15.5px;line-height:1.5;margin-top:14px;text-wrap:pretty;overflow-wrap:anywhere}
+.cwhisper{font-size:14.5px;line-height:1.5;color:var(--tx2);margin-top:6px;text-wrap:pretty;overflow-wrap:anywhere}
+.creason{font-size:14.5px;line-height:1.5;color:#A85B00;margin-top:6px;text-wrap:pretty}
+.cmeta{font-size:13px;color:var(--tx3);margin-top:12px;line-height:1.55;overflow-wrap:anywhere}
+.empty{padding:60px 0;text-align:center;color:var(--tx2);font-size:17px}
+.hint{padding:0 44px 32px;color:var(--tx3);font-size:13px}
+@media (max-width:760px){
+  .head{padding:22px 20px 4px;gap:16px}
+  .wrap{padding:16px 20px 24px}
+  .hint{padding:0 20px 24px}
+  .grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="head">
+  <img src="webui/assets/brand/app-icon.png" alt="">
+  <div class="ttl">
+    <h1>TTS Review</h1>
+    <div class="sub">Stand __NOW__ — __NPASSED__ passed · __NREVIEW__ review needed</div>
+  </div>
+  <div class="filters">
+    <button class="on" data-f="all">Alle (__NALL__)</button>
+    <button data-f="passed">Passed (__NPASSED__)</button>
+    <button data-f="review">Review needed (__NREVIEW__)</button>
+  </div>
+</div>
+<div class="wrap">
+  <div class="grid" id="grid">__CARDS__</div>
+  <div class="empty" id="empty" style="display:__EMPTYALL__">Noch keine Audios generiert.</div>
+</div>
+<div class="hint">Hinweis: Falls .opus-Dateien in Safari nicht abspielbar sind, die Seite in Chrome oder Firefox öffnen.</div>
+<script>
+/* ---------- Filter ---------- */
+document.querySelectorAll(".filters button").forEach(function (b) {
+  b.onclick = function () {
+    document.querySelectorAll(".filters button").forEach(function (x) { x.classList.remove("on"); });
+    b.classList.add("on");
+    var f = b.dataset.f, sichtbar = 0;
+    document.querySelectorAll(".card").forEach(function (c) {
+      var zeig = (f === "all" || c.dataset.status === f);
+      c.style.display = zeig ? "" : "none";
+      if (zeig) sichtbar++;
+    });
+    var leer = document.getElementById("empty");
+    leer.textContent = sichtbar ? "" : "Keine Einträge in dieser Ansicht.";
+    leer.style.display = sichtbar ? "none" : "block";
+  };
+});
+
+/* ---------- Abspieler ---------- */
+/* Ein eigener Player statt <audio controls>, damit die Karten dem Design
+   entsprechen. Es läuft immer nur ein Audio gleichzeitig. */
+var laufend = null;
+function mmss(t) {
+  if (!isFinite(t)) return "–:––";
+  var m = Math.floor(t / 60), s = Math.floor(t % 60);
+  return m + ":" + (s < 10 ? "0" : "") + s;
+}
+document.querySelectorAll(".player").forEach(function (p) {
+  var audio = new Audio();
+  audio.preload = "metadata";
+  audio.src = p.dataset.src;
+  var knopf = p.querySelector(".play");
+  var fill = p.querySelector(".fill");
+  var zeit = p.querySelector(".time");
+  var track = p.querySelector(".track");
+
+  function zeigeDauer() { zeit.textContent = mmss(audio.duration); }
+  function zeigeStand() {
+    if (audio.duration) fill.style.width = (audio.currentTime / audio.duration * 100) + "%";
+  }
+  audio.addEventListener("loadedmetadata", zeigeDauer);
+  audio.addEventListener("durationchange", zeigeDauer);
+  /* Die Metadaten können schon da sein, bevor die Listener hängen. */
+  if (audio.readyState >= 1) zeigeDauer();
+
+  audio.addEventListener("timeupdate", function () {
+    zeigeStand();
+    zeit.textContent = mmss(audio.currentTime);
+  });
+  audio.addEventListener("pause", function () { knopf.classList.remove("pause"); });
+  audio.addEventListener("ended", function () {
+    knopf.classList.remove("pause"); fill.style.width = "0"; laufend = null;
+    audio.currentTime = 0; zeigeDauer();
+  });
+  audio.addEventListener("error", function () { zeit.textContent = "Fehler"; });
+
+  knopf.onclick = function () {
+    if (laufend && laufend.audio !== audio) {
+      laufend.audio.pause(); laufend.knopf.classList.remove("pause");
+    }
+    if (audio.paused) { audio.play(); knopf.classList.add("pause"); laufend = { audio: audio, knopf: knopf }; }
+    else { audio.pause(); laufend = null; }
+  };
+  track.onclick = function (e) {
+    if (!audio.duration) return;
+    var r = track.getBoundingClientRect();
+    audio.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * audio.duration;
+    /* Sofort anzeigen — im pausierten Zustand kommt kein timeupdate. */
+    zeigeStand();
+    zeit.textContent = mmss(audio.currentTime);
+  };
+});
+</script>
+</body>
+</html>
+"""
+
+
 def generate_review_html(output_file=REVIEW_HTML):
     """
-    Erstellt die Review-Seite aus den AKKUMULIERTEN Daten (review_data.json).
-    Neue Audios kommen hinzu, bestehende bleiben — bis zum Reset über die GUI.
+    Erstellt die Review-Seite aus den AKKUMULIERTEN Daten (review_data.json)
+    im Caretable-Design. Neue Audios kommen hinzu, bestehende bleiben —
+    bis zum Reset über die App.
     """
     data = _load_review_data()
-    # Neueste zuerst
     entries = sorted(data.values(), key=lambda e: e.get("generated_at", ""), reverse=True)
 
     cards = []
@@ -1075,8 +1219,8 @@ def generate_review_html(output_file=REVIEW_HTML):
     for e in entries:
         filename = e.get("filename", "")
         audio_src = None
-        # Zuerst der beim Generieren gespeicherte absolute Pfad (robust bei externem Ordner),
-        # sonst im aktuellen OUTPUT_DIR nachsehen.
+        # Zuerst der beim Generieren gespeicherte absolute Pfad (robust bei externem
+        # Ordner), sonst im aktuellen OUTPUT_DIR nachsehen.
         stored = e.get("abspath", "")
         if stored and os.path.exists(stored):
             audio_src = "file://" + stored
@@ -1088,20 +1232,35 @@ def generate_review_html(output_file=REVIEW_HTML):
         status = e.get("status", "").strip().lower()
         if status == "passed":
             n_passed += 1
-            badge_class, badge_label = "passed", "✓ passed"
+            kind, label_txt = "passed", "passed"
         elif status == "review needed":
             n_review += 1
-            badge_class, badge_label = "review", "⚠ review needed"
+            kind, label_txt = "review", "review needed"
         else:
-            badge_class, badge_label = "other", _esc(status or "unbekannt")
+            kind, label_txt = "other", (status or "unbekannt")
 
         label = e.get("id", "") or filename or f"Zeile {e.get('row', '?')}"
-        player = (f'<audio controls preload="none" src="{_esc(audio_src)}"></audio>'
-                  if audio_src else '<p class="missing">Keine Audio-Datei gefunden</p>')
 
-        details = [f'<p class="text"><b>Text:</b> {_esc(e.get("text", ""))}</p>']
-        if e.get("transcript"):
-            details.append(f'<p><b>Whisper:</b> {_esc(e["transcript"])}</p>')
+        if audio_src:
+            player = (f'<div class="player" data-src="{_esc(audio_src)}">'
+                      f'<div class="play" role="button" tabindex="0" aria-label="Abspielen">'
+                      f'<svg class="ico-play" viewBox="0 0 29.195 33.368" width="11" height="13" fill="#fff">'
+                      f'<path d="M27.658 13.99 4.718.428A3.111 3.111 0 0 0 0 3.12v27.117a3.125 '
+                      f'3.125 0 0 0 4.718 2.692l22.94-13.555a3.125 3.125 0 0 0 0-5.384"/></svg>'
+                      f'<svg class="ico-pause" viewBox="0 0 24 24" width="12" height="13" fill="#fff">'
+                      f'<rect x="5" y="4" width="5" height="16" rx="1.4"/>'
+                      f'<rect x="14" y="4" width="5" height="16" rx="1.4"/></svg>'
+                      f'</div><div class="track"><div class="fill"></div></div>'
+                      f'<div class="time">–:––</div></div>')
+        else:
+            player = '<div class="missing">Keine Audio-Datei gefunden</div>'
+
+        whisper = (f'<div class="cwhisper">Whisper: {_esc(e["transcript"])}</div>'
+                   if e.get("transcript") else "")
+        reason = (f'<div class="creason">Grund: {_esc(e["reason"])}</div>'
+                  if e.get("reason") else "")
+        qc_html = _review_qc_html(e.get("qc"))
+
         metrics = []
         if e.get("wer") is not None:
             metrics.append(f"WER {e['wer']:.0%}")
@@ -1109,88 +1268,40 @@ def generate_review_html(output_file=REVIEW_HTML):
             metrics.append(f"Gemini {e['gemini']}/10")
         if e.get("model"):
             metrics.append(_esc(e["model"]))
-        if metrics:
-            details.append(f'<p class="meta">{" · ".join(metrics)}</p>')
-        if e.get("reason"):
-            details.append(f'<p class="reason"><b>Grund:</b> {_esc(e["reason"])}</p>')
-        meta_line = " · ".join(x for x in (filename, e.get("mode", ""), e.get("generated_at", "")) if x)
-        if meta_line:
-            details.append(f'<p class="meta">{_esc(meta_line)}</p>')
+        line2 = " · ".join(x for x in (filename, e.get("mode", ""),
+                                       e.get("generated_at", "")) if x)
+        meta = "<br>".join(x for x in (" · ".join(metrics), _esc(line2)) if x)
 
-        cards.append(f"""
-    <div class="card {badge_class}" data-status="{badge_class}">
-      <div class="card-head">
-        <span class="badge {badge_class}">{badge_label}</span>
-        <span class="label">{_esc(label)}</span>
-      </div>
-      {player}
-      {''.join(details)}
-    </div>""")
+        cards.append(f'''
+      <div class="card" data-status="{kind}">
+        <div class="chead">
+          <div class="chip {kind}">{_CHIP_ICON if kind == "passed" else ""}{_esc(label_txt)}</div>
+          <div class="cid">{_esc(label)}</div>
+        </div>
+        {player}
+        <div class="ctext">{_esc(e.get("text", ""))}</div>
+        {whisper}
+        {reason}
+        {qc_html}
+        <div class="cmeta">{meta}</div>
+      </div>''')
 
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
-    body = ''.join(cards) if cards else '<p class="empty">Noch keine Audios generiert.</p>'
-    html = f"""<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="utf-8">
-<title>TTS Review — {now}</title>
-<style>
-  body {{ font-family: -apple-system, "Segoe UI", Arial, sans-serif; background: #f4f5f7;
-         margin: 0; padding: 24px; color: #222; }}
-  h1 {{ font-size: 1.3rem; margin: 0 0 4px; }}
-  .sub {{ color: #666; margin-bottom: 18px; }}
-  .filters {{ margin-bottom: 18px; }}
-  .filters button {{ border: 1px solid #ccc; background: #fff; padding: 6px 14px;
-      border-radius: 16px; margin-right: 8px; cursor: pointer; font-size: 0.9rem; }}
-  .filters button.active {{ background: #1f4e5f; color: #fff; border-color: #1f4e5f; }}
-  .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }}
-  .card {{ background: #fff; border-radius: 10px; padding: 14px 16px;
-           box-shadow: 0 1px 3px rgba(0,0,0,.08); border-left: 5px solid #bbb; }}
-  .card.passed {{ border-left-color: #2e9e5b; }}
-  .card.review {{ border-left-color: #e07b00; }}
-  .card-head {{ display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }}
-  .badge {{ font-size: 0.75rem; font-weight: 600; padding: 2px 10px; border-radius: 10px; color: #fff; }}
-  .badge.passed {{ background: #2e9e5b; }}
-  .badge.review {{ background: #e07b00; }}
-  .badge.other {{ background: #888; }}
-  .label {{ font-weight: 600; }}
-  audio {{ width: 100%; margin: 6px 0; }}
-  p {{ margin: 4px 0; font-size: 0.9rem; }}
-  .text {{ font-size: 0.95rem; }}
-  .reason {{ color: #b34700; }}
-  .meta {{ color: #888; font-size: 0.8rem; }}
-  .missing {{ color: #c00; font-style: italic; }}
-  .empty {{ color: #999; font-size: 1rem; }}
-  .hint {{ margin-top: 22px; color: #999; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<h1>TTS Review</h1>
-<div class="sub">Stand: {now} — {n_passed} passed · {n_review} review needed</div>
-<div class="filters">
-  <button class="active" onclick="filterCards('all', this)">Alle ({n_passed + n_review})</button>
-  <button onclick="filterCards('passed', this)">Passed ({n_passed})</button>
-  <button onclick="filterCards('review', this)">Review needed ({n_review})</button>
-</div>
-<div class="grid">
-{body}
-</div>
-<p class="hint">Hinweis: Falls .opus-Dateien in Safari nicht abspielbar sind, die Datei in Chrome oder Firefox öffnen.</p>
-<script>
-function filterCards(status, btn) {{
-  document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  document.querySelectorAll('.card').forEach(c => {{
-    c.style.display = (status === 'all' || c.dataset.status === status) ? '' : 'none';
-  }});
-}}
-</script>
-</body>
-</html>"""
+    now = datetime.now().strftime("%d.%m.%Y, %H:%M")
+    n_all = n_passed + n_review
+    body = "".join(cards)
+    empty_all = "" if entries else "block"
+
+    html = (_REVIEW_TEMPLATE
+            .replace("__NOW__", now)
+            .replace("__NPASSED__", str(n_passed))
+            .replace("__NREVIEW__", str(n_review))
+            .replace("__NALL__", str(len(entries)))
+            .replace("__CARDS__", body)
+            .replace("__EMPTYALL__", empty_all))
 
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(html)
-    return output_file, n_passed + n_review
+    return output_file, n_all
 
 
 def reset_review(output_file=REVIEW_HTML):
@@ -1201,6 +1312,9 @@ def reset_review(output_file=REVIEW_HTML):
 
 
 def main(only_rows=None):
+    global _gemini_last_call, _gemini_disabled_for_run
+    _gemini_last_call = 0.0
+    _gemini_disabled_for_run = False
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(REVIEW_DIR, exist_ok=True)
 
@@ -1224,8 +1338,9 @@ def main(only_rows=None):
 
     gemini_client = None
     if ENABLE_GEMINI_CHECK:
-        print("✨ Initializing Gemini client...")
-        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        print(f"✨ Initializing Gemini client ({GEMINI_MODEL})...")
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY,
+                                     http_options=types.HttpOptions(timeout=60000))
     print()
 
     print("📄 Öffne Google Sheet...")
@@ -1261,8 +1376,11 @@ def main(only_rows=None):
     usage_start = get_elevenlabs_character_count()
     counts = {"passed": 0, "review": 0, "failed": 0, "skipped": 0}
 
-    for row in to_process:
+    gesamt = len(to_process)
+    print(f"@@PROGRESS 0/{gesamt}", flush=True)
+    for i, row in enumerate(to_process, 1):
         process_row(row, ws, header_map, whisper_model, gemini_client, counts)
+        print(f"@@PROGRESS {i}/{gesamt}", flush=True)
         time.sleep(DELAY_BETWEEN_REQUESTS)
 
     print(f"\n{'='*60}")
