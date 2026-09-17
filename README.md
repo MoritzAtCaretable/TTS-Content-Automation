@@ -273,11 +273,17 @@ ausführen (`./install.sh` bzw. `install.bat`).
 App neu starten und **Review** öffnen. Die neue Prüfseite läuft auf einer lokalen
 Adresse und bleibt bedienbar, solange die App geöffnet ist. Eine früher gespeicherte
 `review.html` bleibt ein Bericht zum Anhören; die Bearbeitung startet über die App.
+Die Übersicht zeigt auf breiten Bildschirmen drei Audios nebeneinander. Abspielen
+und Statuswahl sind direkt im Raster möglich; auf schmalen Bildschirmen passt sich
+das Raster auf zwei bzw. eine Spalte an.
 
-- **Freigeben / Zur Prüfung markieren:** Entscheidung mit optionaler Notiz lokal
-  speichern und ins Google Sheet schreiben. Manuelle Entscheidungen bleiben vom
-  automatischen Befund unterscheidbar. Freigeben prüft zusätzlich das Exportformat
+- **Status direkt auf der Karte:** `passed`, `review needed` oder `regenerate`
+  ohne Begründungsdialog lokal speichern und ins Google Sheet schreiben.
+  `regenerate` merkt den Inhalt für den nächsten Generierungslauf vor. Manuelle
+  Entscheidungen bleiben vom automatischen Befund unterscheidbar. Freigeben prüft zusätzlich das Exportformat
   und veröffentlicht die ausgewählte Version als finale Datei.
+- **Vergrößerte Ansicht:** Eine Karte oder „Bearbeiten“ öffnet Wellenform, Schnitt,
+  automatische Prüfung und sofortige Neugenerierung. Escape schließt die Ansicht.
 - **Audio schneiden:** Aktuelle Version oder erhaltenes Original auswählen,
   Start/Ende in der Wellenform einstellen und den Ausschnitt vorhören. Speichern
   erstellt einen neuen, geprüften Export. Inhalt und Natürlichkeit müssen danach

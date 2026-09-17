@@ -1,4 +1,31 @@
 <!doctype html>
-<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TTS Studio · Audio prüfen</title><link rel="stylesheet" href="review.css"><script defer src="review.js"></script></head>
-<body><header><div class="brand">TTS STUDIO <span>REVIEW</span></div><h1>Audios prüfen und bearbeiten</h1><p>Anhören, gezielt schneiden und freigeben. Änderungen werden auch ins Sheet geschrieben.</p><div class="toolbar"><label>Suche<input id="search" type="search" placeholder="ID, Text oder Befund"></label><label>Status<select id="filter"><option value="all">Alle Audios</option><option value="review needed">Prüfung erforderlich</option><option value="passed">Freigegeben</option><option value="sync">Synchronisierung ausstehend</option></select></label><button id="reload">Neu laden</button></div></header>
-<main><div class="summary"><span id="count">Lade Audios…</span><span id="job" role="status">Verbinde…</span></div><div id="notice" role="alert" hidden></div><div id="entries"></div></main><footer>Die App muss geöffnet bleiben. Die Prüfseite läuft ausschließlich auf diesem Computer.</footer></body></html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TTS Review</title>
+  <link rel="stylesheet" href="review.css">
+  <script defer src="review.js"></script>
+</head>
+<body>
+  <header>
+    <div class="heading"><img src="assets/brand/app-icon.png" alt=""><div><h1>TTS Review</h1><p>Anhören, Status setzen und Audios bearbeiten.</p></div></div>
+    <div class="toolbar">
+      <label class="search-label">Suche<input id="search" type="search" placeholder="ID, Text oder Befund"></label>
+      <label>Status<select id="filter"><option value="all">Alle Audios</option><option value="passed">Passed</option><option value="review needed">Review needed</option><option value="regenerate">Regenerate</option><option value="sync">Synchronisierung ausstehend</option></select></label>
+      <button id="reload">Neu laden</button>
+    </div>
+  </header>
+  <main>
+    <div class="summary"><span id="count">Lade Audios…</span><span id="job" role="status">Verbinde…</span></div>
+    <div id="notice" role="status" hidden></div>
+    <div id="entries" class="grid"></div>
+  </main>
+  <dialog id="detail" aria-labelledby="detail-title">
+    <div class="dialog-bar"><span>Audio bearbeiten</span><button id="close-detail" aria-label="Vergrößerte Ansicht schließen">Schließen ✕</button></div>
+    <div id="detail-notice" role="status" hidden></div>
+    <div id="detail-content"></div>
+  </dialog>
+  <footer>Karte öffnen für Schnitt und Wellenform. Die App muss während der Bearbeitung geöffnet bleiben.</footer>
+</body>
+</html>

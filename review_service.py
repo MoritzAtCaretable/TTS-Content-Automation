@@ -222,14 +222,14 @@ class ReviewService:
             return {"message": "Prüfung abgeschlossen: " + ("bestanden" if qc.passed else "Review erforderlich")}
         if action == "status":
             status = options.get("status")
-            if status not in {"passed", "review needed"}:
+            if status not in {"passed", "review needed", "regenerate"}:
                 raise ValueError("Unbekannter Status")
             note = str(options.get("note", "")).strip()[:1000]
             if status == "passed":
                 self.publish(entry)
             entry["decision"] = {"type": "manual", "note": note,
                                  "at": datetime.now().isoformat(timespec="seconds")}
-            self.persist(key, entry, status, ("Manuell freigegeben" if status == "passed" else "Manuell zur Prüfung markiert") + (": " + note if note else ""))
+            self.persist(key, entry, status, {"passed": "Manuell freigegeben", "review needed": "Manuell zur Prüfung markiert", "regenerate": "Zur Neugenerierung vorgemerkt"}[status] + (": " + note if note else ""))
             return {"message": "Status gespeichert."}
         raise ValueError("Unbekannte Aktion")
 
@@ -307,6 +307,9 @@ class ReviewServer:
                         entry = owner.service.entry(route[6:], query.get("version", [None])[0])
                         return self.file_response(owner.service.audio_path(entry, query.get("source", ["current"])[0]), audio=True)
                     assets = {"": "review.html", "review.js": "review.js", "review.css": "review.css"}
+                    for asset in ("assets/brand/app-icon.png", "assets/fonts/CardiumARegular.woff2",
+                                  "assets/fonts/CardiumAMedium.woff2", "assets/fonts/CardiumABold.woff2"):
+                        assets[asset] = asset
                     if route in assets:
                         return self.file_response(owner.root / "webui" / assets[route])
                     raise ValueError("Seite nicht gefunden")

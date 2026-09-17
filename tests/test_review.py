@@ -96,6 +96,18 @@ class ReviewTests(unittest.TestCase):
             self.perform('sync');generate.assert_not_called()
         self.assertFalse(self.service.entry('test')['sync_error'])
 
+    def test_regenerate_status_queues_without_generating_or_publishing(self):
+        with patch.object(self.api, 'run_generation') as generate, patch.object(self.service, 'publish') as publish:
+            self.perform('status', {'status': 'regenerate'})
+            generate.assert_not_called()
+            publish.assert_not_called()
+        entry = self.service.entry('test')
+        self.assertEqual(entry['status'], 'regenerate')
+        self.assertEqual(entry['sync_updates']['status'], 'regenerate')
+        self.assertEqual(entry['decision']['note'], '')
+        self.assertTrue(pipeline.should_process(entry['status']))
+        self.assertEqual(self.mocks[4].call_args.args[3]['status'], 'regenerate')
+
     def test_changed_sheet_blocks_paid_regeneration(self):
         self.mocks[5].return_value=(Mock(),{},[dict(self.entry,_row=9,text='Birne')])
         with patch.object(self.api,'run_generation') as generate:
