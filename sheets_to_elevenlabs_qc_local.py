@@ -99,6 +99,7 @@ if _env_rows:
 # ElevenLabs — Keys/Voice kommen aus der .env (siehe .env.example)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "iMHt6G42evkXunaDU065")
+VOICE_NAME = os.getenv("TTS_VOICE_NAME", "Bisherige Stimme")
 # Modell per Umgebungsvariable überschreibbar (wird von der GUI-App gesetzt)
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
 ELEVENLABS_LANGUAGE_CODE = "de"   # Erzwingt die Sprache (ISO 639-1). None = automatisch.
@@ -489,6 +490,7 @@ def text_to_speech(text: str, output_path: str, seed: int = None,
             data = response.json()
             audio_bytes = base64.b64decode(data["audio_base64"], validate=True)
             metadata = {"target": text, "lead_in": SINGLE_WORD_LEAD_IN, "model": ELEVENLABS_MODEL,
+                        "voice_id": VOICE_ID, "voice_name": VOICE_NAME,
                         "alignment": data.get("alignment"), "normalized_alignment": data.get("normalized_alignment")}
         except (ValueError, KeyError, TypeError) as e:
             raise AudioProcessingError("ElevenLabs lieferte keine gültige Audio-/Zeitstempelantwort") from e
@@ -803,7 +805,7 @@ def process_row(row, ws, header_map, whisper_model, gemini_client, counts):
             qc = QualityResult({**stages, stage: CheckResult("error", str(e)),
                                 "content": CheckResult("skipped", "Keine vollständige Qualitätsprüfung möglich")})
         entry = {"attempt": attempt, "seed": seed, "audio": work_path or raw_path,
-                 "raw_audio": raw_path, "qc": qc.to_dict()}
+                 "raw_audio": raw_path, "voice_id": VOICE_ID, "voice_name": VOICE_NAME, "qc": qc.to_dict()}
         history.append(entry)
         # Store after each attempt, including failures. Source/intermediate files
         # remain usable for review and reprocessing without another paid request.
@@ -936,7 +938,7 @@ def _save_review_entry(entry: dict, key=None):
     previous = data.get(key)
     if previous and "history" not in entry:
         entry["history"] = list(previous.get("history", []))
-        fields = ("abspath", "raw_abspath", "status", "reason", "qc", "decision", "generated_at", "sources_dir")
+        fields = ("abspath", "raw_abspath", "status", "reason", "qc", "decision", "generated_at", "sources_dir", "voice_id", "voice_name")
         if any(previous.get(k) != entry.get(k) for k in fields):
             entry["history"].append({k: previous.get(k) for k in fields})
     data[key] = entry
@@ -979,7 +981,7 @@ def _record_review(row: dict):
         "wer": row.get("_wer"),
         "gemini": row.get("_gemini"),
         "qc": row.get("_qc"),
-        "model": ELEVENLABS_MODEL,
+        "model": ELEVENLABS_MODEL, "voice_id": VOICE_ID, "voice_name": VOICE_NAME,
     })
 
 

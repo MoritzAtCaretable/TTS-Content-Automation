@@ -192,3 +192,16 @@ a:hover{color:var(--green-deep)}
 .sheet .pre{margin-top:12px;padding:12px 14px;border-radius:10px;background:var(--inset);
      font-family:var(--mono);font-size:13px;line-height:1.7;max-height:260px;overflow:auto;white-space:pre}
 .sheet .acts{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
+
+/* Gespeicherte ElevenLabs-Stimmen */
+.voicerow{display:flex;align-items:center;gap:12px;margin-top:16px}
+.voicerow .field{flex:1;min-width:0}
+.voice-add{font-size:26px;width:48px;height:52px;padding:0;flex:none}
+#voiceDialog{width:min(520px,calc(100% - 40px));padding:28px;border:0;border-radius:16px;background:var(--card);color:var(--tx);box-shadow:0 18px 60px #000f2840}
+#voiceDialog::backdrop{background:#000f2866}
+#voiceDialog h3{margin:0 0 10px;font-size:23px;color:var(--green)}
+#voiceDialog p{font-size:14px;line-height:1.6;color:var(--tx2)}
+#voiceDialog .stack{display:block;margin-top:16px}
+#voiceDialog input{width:100%}
+#voiceDialog .acts{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}
+#voiceDialog #voiceError{color:var(--ct_fail)}

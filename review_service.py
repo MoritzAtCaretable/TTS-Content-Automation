@@ -48,7 +48,7 @@ class ReviewService:
             result.append({"key": key, "version": self.version(entry), **{
                 k: entry.get(k) for k in ("id", "text", "filename", "mode", "status", "reason",
                                          "generated_at", "transcript", "wer", "gemini", "model", "qc",
-                                         "sync_error", "decision")},
+                                         "sync_error", "decision", "voice_id", "voice_name")},
                 "has_audio": bool(entry.get("abspath") and Path(entry["abspath"]).is_file()),
                 "has_original": bool(entry.get("raw_abspath") and Path(entry["raw_abspath"]).is_file())})
         return sorted(result, key=lambda e: e.get("generated_at") or "", reverse=True)
@@ -162,7 +162,8 @@ class ReviewService:
             if model not in self.api.get_state()["models"]:
                 raise ValueError("Unbekanntes Stimmmodell")
             selection = [{k: entry.get(k, "") for k in ("id", "text", "mode", "filename")}]
-            return self.api.run_generation(selection, str(self.target(entry).parent), model)
+            voice_id = entry.get("voice_id") or self.api.voices.data["legacy_voice_id"] or self.p.VOICE_ID
+            return self.api.run_generation(selection, str(self.target(entry).parent), model, voice_id)
         if action == "trim":
             source = self.audio_path(entry, options.get("source", "current"))
             start, end = options.get("start"), options.get("end")

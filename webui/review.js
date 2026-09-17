@@ -50,12 +50,13 @@ function bindActions(root, entry) {
 }
 function render() {
   const needle = $('#search').value.toLocaleLowerCase(), filter = $('#filter').value;
-  const shown = entries.filter(entry => (filter === 'all' || (filter === 'sync' ? entry.sync_error : entry.status === filter)) && `${entry.id} ${entry.text} ${entry.reason}`.toLocaleLowerCase().includes(needle));
+  const shown = entries.filter(entry => (filter === 'all' || (filter === 'sync' ? entry.sync_error : entry.status === filter)) && `${entry.id} ${entry.text} ${entry.reason} ${entry.voice_name || ''}`.toLocaleLowerCase().includes(needle));
   $('#count').textContent = `${shown.length} von ${entries.length} Audios · ${entries.filter(e => e.status === 'passed').length} passed · ${entries.filter(e => e.status === 'regenerate').length} regenerate`;
   $('#entries').innerHTML = shown.map(entry => `<article class="card" data-key="${esc(entry.key)}">
     <div class="card-head"><div class="identity">${esc(entry.id)}</div><span class="badge ${entry.status === 'passed' ? 'passed' : entry.status === 'regenerate' ? 'regenerate' : ''}">${statusLabel(entry.status)}</span></div>
     <div class="text">${esc(entry.text)}</div>
     <div class="meta" title="${esc(entry.filename)}">${esc(entry.filename)}</div>
+    <div class="muted">Stimme: ${esc(entry.voice_name || entry.voice_id || 'Bisherige Stimme (Altbestand)')}</div>
     <div class="card-bottom">${player(entry)}${syncWarning(entry)}<div class="card-actions">${statusSelect(entry)}<button data-open aria-label="${esc(entry.id)} vergrößert bearbeiten">Bearbeiten ↗</button></div></div>
   </article>`).join('') || '<div class="empty">Keine passenden Audios vorhanden.</div>';
   document.querySelectorAll('.card').forEach(card => {
@@ -81,7 +82,7 @@ function renderDetail(entry) {
   editors.clear();
   selectedVersion = entry.version;
   const root = $('#detail-content');
-  root.innerHTML = `<div class="detail-top"><div><h2 id="detail-title">${esc(entry.id)}</h2><div class="muted">${esc(entry.filename)} · ${esc(entry.model || 'Modell unbekannt')}</div></div>${statusSelect(entry)}</div>
+  root.innerHTML = `<div class="detail-top"><div><h2 id="detail-title">${esc(entry.id)}</h2><div class="muted">${esc(entry.filename)} · ${esc(entry.model || 'Modell unbekannt')}<br>Stimme: ${esc(entry.voice_name || entry.voice_id || 'Bisherige Stimme (Altbestand)')}</div></div>${statusSelect(entry)}</div>
     <div class="text">${esc(entry.text)}</div><div class="reason">${esc(entry.reason)}</div>${player(entry)}${syncWarning(entry)}
     ${entry.has_audio || entry.has_original ? `<section class="editor"><h3>Audio schneiden</h3><p>Grenzen in der Wellenform ziehen oder Zeiten einstellen. Der ausgewählte Bereich wird behalten; nach dem Speichern ist eine erneute Freigabe nötig.</p>
       <label>Audioquelle<select class="source">${entry.has_audio ? '<option value="current">Aktuelle Version</option>' : ''}${entry.has_original ? '<option value="original">Ungeschnittenes Original</option>' : ''}</select></label>

@@ -22,6 +22,8 @@ import webbrowser
 from pathlib import Path
 from typing import List, Optional
 
+from tts_voices import VoiceStore, fetch_voice, validate_voice_id
+
 PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR))
 
@@ -60,7 +62,7 @@ def sheet_url() -> str:
 
 
 class Api:
-    def __init__(self) -> None:
+    def __init__(self, voice_config_path=None) -> None:
         self._window = None
         self.root = PROJECT_DIR
         self.log_queue: queue.Queue = queue.Queue()
@@ -71,6 +73,7 @@ class Api:
         self._job_lock = threading.Lock()
         self._outcome = {"state": "idle", "id": "", "message": "Bereit"}
         self._review_server = None
+        self.voices = VoiceStore(voice_config_path or self.root / ".tts_voices.json", pipeline.VOICE_ID)
         self.model = (pipeline.ELEVENLABS_MODEL
                       if pipeline.ELEVENLABS_MODEL in VOICE_MODELS else VOICE_MODELS[0])
         self.folder = str((PROJECT_DIR / pipeline.OUTPUT_DIR).resolve()
@@ -83,6 +86,7 @@ class Api:
     @_guard
     def get_state(self) -> dict:
         return {
+            **self.voices.state(),
             "models": VOICE_MODELS,
             "model": self.model,
             "folder": self.folder,
@@ -96,6 +100,28 @@ class Api:
         if model in VOICE_MODELS:
             self.model = model
         return {}
+
+    @_guard
+    def set_voice(self, voice_id: str) -> dict:
+        with self._job_lock:
+            if self._busy:
+                raise ValueError("Bitte den laufenden Vorgang abwarten.")
+            return self.voices.select(voice_id)
+
+    @_guard
+    def add_voice(self, voice_id: str, name: str = "") -> dict:
+        voice_id = validate_voice_id(voice_id)
+        with self._job_lock:
+            if self._busy:
+                raise ValueError("Bitte den laufenden Vorgang abwarten.")
+        existing = next((v for v in self.voices.state()["voices"] if v["id"] == voice_id), None)
+        voice = existing or fetch_voice(voice_id, pipeline.ELEVENLABS_API_KEY)
+        if name.strip():
+            voice["name"] = " ".join(name.split())[:100]
+        with self._job_lock:
+            if self._busy:
+                raise ValueError("Inzwischen wurde ein Lauf gestartet. Bitte danach erneut hinzufügen.")
+            return self.voices.add(voice)
 
     # ------------------------------------------------------------ Sheet lesen
 
@@ -272,10 +298,13 @@ class Api:
             raise
         return {"job_id": job_id}
 
-    def run_generation(self, selection=None, folder=None, model=None):
+    def run_generation(self, selection=None, folder=None, model=None, voice_id=None):
+        voice = self.voices.get(voice_id)
         env = os.environ.copy()
         env.update(PYTHONUNBUFFERED="1", ELEVENLABS_MODEL=model or self.model,
-                   OUTPUT_DIR=folder or self.folder)
+                   OUTPUT_DIR=folder or self.folder,
+                   ELEVENLABS_VOICE_ID=voice["id"], TTS_VOICE_NAME=voice["name"])
+        self._log(f"🎙 Stimme: {voice['name']} ({voice['id']})")
         env.pop("TTS_ONLY_ROWS", None)
         env.pop("TTS_SELECTION", None)
         if selection is not None:
@@ -316,8 +345,8 @@ class Api:
             from tts_identity import resolve_record
             selection = [{k: resolve_record(self.rows, r).get(k, "") for k in ("id", "text", "mode")} for r in selected]
         self.progress = {"done": 0, "total": len(wanted)}
-        folder, model = self.folder, self.model
-        result = self.launch_job(lambda: self.run_generation(selection, folder, model), "Generierung läuft")
+        folder, model, voice_id = self.folder, self.model, self.voices.get()["id"]
+        result = self.launch_job(lambda: self.run_generation(selection, folder, model, voice_id), "Generierung läuft")
         return {**result, "total": len(wanted)}
 
     def shutdown(self):

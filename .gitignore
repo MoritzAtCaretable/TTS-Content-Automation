@@ -34,3 +34,6 @@ Thumbs.db
 audit/
 .claude/
 .sources/
+
+# Lokale Stimmenauswahl
+.tts_voices.json

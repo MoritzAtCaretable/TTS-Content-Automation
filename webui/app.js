@@ -13,6 +13,7 @@ const S = {
   running: false,
   adding: false,
   lastJob: "",
+  voicePending: false,
 };
 
 /* ---------- kleine Helfer ---------- */
@@ -65,6 +66,60 @@ function confirmBox({ title, body, pre = "", ok = "Weiter", danger = false }) {
   });
 }
 
+/* ---------- Stimmen ---------- */
+function renderVoices(data) {
+  S.state = {...S.state, voices: data.voices || [], voice_id: data.voice_id || ""};
+  $("#voice").innerHTML = S.state.voices.length
+    ? S.state.voices.map(v => `<option value="${esc(v.id)}" ${v.id === S.state.voice_id ? "selected" : ""}>${esc(v.name)}</option>`).join("")
+    : '<option value="">Über + eine Stimme hinzufügen</option>';
+  $("#voice").title = S.state.voice_id;
+  voiceControls();
+}
+function voiceControls() {
+  $("#voice").disabled = S.running || S.voicePending;
+  $("#btnAddVoice").disabled = S.running || S.voicePending;
+  updateSel();
+}
+async function changeVoice() {
+  S.voicePending = true;
+  voiceControls();
+  const result = await api("set_voice", $("#voice").value);
+  S.voicePending = false;
+  renderVoices(result || S.state);
+}
+function openVoiceDialog() {
+  if (S.running || S.voicePending) return;
+  $("#voiceForm").reset();
+  $("#voiceError").hidden = true;
+  $("#voiceDialog").showModal();
+}
+async function saveVoice(event) {
+  event.preventDefault();
+  if (S.voicePending || S.running) return;
+  S.voicePending = true;
+  voiceControls();
+  $("#saveVoice").disabled = $("#cancelVoice").disabled = true;
+  $("#newVoiceId").disabled = $("#newVoiceName").disabled = true;
+  $("#saveVoice").textContent = "Stimme wird geprüft…";
+  $("#voiceError").hidden = true;
+  try {
+    const result = await window.pywebview.api.add_voice($("#newVoiceId").value, $("#newVoiceName").value);
+    if (!result || result.ok === false) throw Error(result?.error || "Stimme konnte nicht hinzugefügt werden.");
+    renderVoices(result);
+    $("#voiceDialog").close();
+    toast("Stimme hinzugefügt und ausgewählt.", "ok");
+  } catch (error) {
+    $("#voiceError").textContent = error.message;
+    $("#voiceError").hidden = false;
+  } finally {
+    S.voicePending = false;
+    $("#saveVoice").disabled = $("#cancelVoice").disabled = false;
+    $("#newVoiceId").disabled = $("#newVoiceName").disabled = false;
+    $("#saveVoice").textContent = "Hinzufügen";
+    voiceControls();
+  }
+}
+
 /* ---------- Sheet-Tabelle ---------- */
 function statusClass(st) {
   const s = (st || "").trim().toLowerCase();
@@ -110,7 +165,7 @@ function updateSel() {
     $("#scope").textContent = total
       ? `${n} ausgewählt — verarbeitet wird genau diese Auswahl`
       : "";
-    $("#btnStart").disabled = S.loading || S.adding || !S.loaded || n === 0;
+    $("#btnStart").disabled = S.loading || S.adding || S.voicePending || !S.state?.voice_id || !S.loaded || n === 0;
   }
 }
 
@@ -186,7 +241,7 @@ async function addRows() {
 
 /* ---------- Lauf ---------- */
 async function start() {
-  if (S.running || S.loading || S.adding || !S.loaded) return;
+  if (S.running || S.loading || S.adding || S.voicePending || !S.state?.voice_id || !S.loaded) return;
   const rows = Array.from(S.sel).sort((a, b) => a - b);
   const allOpen = !S.loaded || !S.rows.length;     // Tabelle leer → Status-Filter
   if (!rows.length && !allOpen) {
@@ -219,6 +274,7 @@ function setRunning(on, total) {
   $("#btnAdd").disabled = on;
   $("#btnUpdate").disabled = on;
   $("#model").disabled = on;
+  voiceControls();
   $("#btnFolder").disabled = on;
   $$(".pill").forEach(b => b.disabled = on);
   $("#state").textContent = on ? "Läuft…" : "Bereit";
@@ -290,6 +346,7 @@ async function boot() {
   const st = await api("get_state");
   if (st) {
     S.state = st;
+    renderVoices(st);
     $("#model").innerHTML = (st.models || []).map(m =>
       `<option${m === st.model ? " selected" : ""}>${esc(m)}</option>`).join("");
     $("#folder").textContent = st.folder;
@@ -297,9 +354,14 @@ async function boot() {
     $("#shVal").textContent = st.has_sheet_id ? "…" : "keine ID";
     if (!st.has_sheet_id) $("#shDot").style.background = "var(--ct_F1)";
   }
-  addLog("TTS Studio bereit. Modell und Zielordner wählen, dann Start.");
+  addLog("TTS Studio bereit. Stimme, Modell und Zielordner wählen, dann Start.");
 
   /* Ereignisse */
+  $("#voice").onchange = changeVoice;
+  $("#btnAddVoice").onclick = openVoiceDialog;
+  $("#voiceForm").onsubmit = saveVoice;
+  $("#cancelVoice").onclick = () => $("#voiceDialog").close();
+  $("#voiceDialog").addEventListener("cancel", event => { if (S.voicePending) event.preventDefault(); });
   $("#model").onchange = () => api("set_model", $("#model").value);
   $("#btnFolder").onclick = async () => {
     const r = await api("choose_folder");

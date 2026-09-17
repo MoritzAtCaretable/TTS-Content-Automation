@@ -36,9 +36,13 @@
       <!-- ElevenLabs -->
       <div class="card">
         <h2>ElevenLabs</h2>
-        <div class="hint">Stimmmodell für den Lauf</div>
+        <div class="hint">Stimme und Modell für den Lauf</div>
+        <div class="voicerow">
+          <label class="field"><div style="flex:1;min-width:0"><div class="cap">Stimme</div><select id="voice" aria-label="Stimme für die Generierung"></select></div><span aria-hidden="true">⌄</span></label>
+          <button class="btn turq voice-add" id="btnAddVoice" aria-label="Stimme hinzufügen" title="Stimme hinzufügen">+</button>
+        </div>
         <div class="modelrow">
-          <div class="mlbl">Voice-Modell</div>
+          <div class="mlbl">TTS-Modell</div>
           <label class="field click">
             <div style="flex:1;min-width:0">
               <div class="cap">Modell</div>
@@ -187,6 +191,16 @@
 
 <div id="toast"></div>
 <div id="modal"></div>
+<dialog id="voiceDialog" aria-labelledby="voiceDialogTitle">
+  <form id="voiceForm">
+    <h3 id="voiceDialogTitle">Stimme hinzufügen</h3>
+    <p>ElevenLabs-Stimm-ID einfügen. Der Name wird automatisch übernommen und die Stimme anschließend ausgewählt.</p>
+    <label class="stack"><div class="cap">ElevenLabs-Stimm-ID</div><input id="newVoiceId" type="text" required maxlength="128" autocomplete="off" spellcheck="false" placeholder="Stimm-ID aus ElevenLabs" autofocus></label>
+    <label class="stack voice-alias"><div class="cap">Eigener Anzeigename (optional)</div><input id="newVoiceName" type="text" maxlength="100" placeholder="z. B. Weibliche Stimme"></label>
+    <p id="voiceError" role="alert" hidden></p>
+    <div class="acts"><button class="btn quiet" type="button" id="cancelVoice">Abbrechen</button><button class="btn turq" type="submit" id="saveVoice">Hinzufügen</button></div>
+  </form>
+</dialog>
 <script src="app.js"></script>
 </body>
 </html>

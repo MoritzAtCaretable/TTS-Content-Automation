@@ -44,7 +44,7 @@ class ReviewTests(unittest.TestCase):
         self.entry={'id':'apple','text':'Apfel','mode':'word','filename':self.target.name,
                     'target_path':str(self.target),'abspath':str(self.source),'raw_abspath':str(self.source),
                     'status':'review needed','model':'eleven_v3', 'sheet_id':'offline','sheet_name':'tab'}
-        self.api=Api(); self.service=ReviewService(self.api,pipeline)
+        self.api=Api(voice_config_path=self.root/"voices.json"); self.service=ReviewService(self.api,pipeline)
         patches=[patch.object(pipeline,'REVIEW_DATA_FILE',str(self.root/'review.json')),
                  patch.object(pipeline,'SPREADSHEET_ID','offline'),patch.object(pipeline,'SHEET_NAME','tab'),
                  patch.object(pipeline,'generate_review_html'),patch.object(pipeline,'write_back'),
@@ -117,7 +117,7 @@ class ReviewTests(unittest.TestCase):
     def test_regenerate_passes_stable_selection_folder_and_model(self):
         with patch.object(self.api,'run_generation',return_value={'message':'done'}) as generate:
             self.perform('regenerate',{'model':'eleven_flash_v2_5'})
-        generate.assert_called_once_with([{'id':'apple','text':'Apfel','mode':'word','filename':'apple.opus'}],str(self.root),'eleven_flash_v2_5')
+        generate.assert_called_once_with([{'id':'apple','text':'Apfel','mode':'word','filename':'apple.opus'}],str(self.root),'eleven_flash_v2_5',pipeline.VOICE_ID)
 
     def test_recheck_reuses_audio_without_tts_and_publishes_only_pass(self):
         # Verification and provider QC are isolated; actual exporter is tested above.

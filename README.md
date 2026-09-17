@@ -307,3 +307,30 @@ getrennt. Eine beschädigte Datenbank wird nicht still überschrieben. Originale
 Versuche und vorherige Exporte bleiben in `.sources` erhalten. Beim Zurücksetzen
 der Review-Liste werden Audiodateien nicht gelöscht. Suche und Statusfilter helfen,
 offene Prüfungen und ausstehende Synchronisierungen zu finden.
+
+
+### Stimmen hinzufügen und wechseln
+
+Im Bereich **ElevenLabs → Stimme** die gewünschte Stimme auswählen. Über **+**
+eine ElevenLabs-Stimm-ID einfügen und **Hinzufügen** drücken. Die App liest den
+Namen über den [ElevenLabs-Stimmenabruf](https://elevenlabs.io/docs/api-reference/voices/get),
+speichert die Stimme und wählt sie direkt aus. Optional kann ein eigener
+Anzeigename vergeben werden. Dafür wird kein Testaudio erzeugt. Der API-Key muss
+auf die Stimme zugreifen und Stimmen lesen dürfen; bei einer nicht verfügbaren ID
+bleibt die bisherige Konfiguration erhalten. Stimmen aus einer geteilten Bibliothek
+müssen gegebenenfalls zuerst im ElevenLabs-Konto hinzugefügt werden.
+
+Die bisherige `ELEVENLABS_VOICE_ID` aus `.env` erscheint automatisch als
+**Bisherige Stimme**. Die lokale Datei `.tts_voices.json` speichert die Stimmenliste
+und die letzte Auswahl auch über App-Neustarts hinweg. Sie enthält keine API-Keys
+und wird nicht mit Git synchronisiert. Dieselbe ID wird nur einmal angelegt; über
+**+** mit derselben ID und einem Anzeigenamen kann sie umbenannt werden.
+
+Ein Generierungslauf verwendet durchgehend die beim Start gewählte Stimme.
+Alle Stimmen nutzen wie bisher denselben Zielordner und dieselben Dateinamen:
+Eine neue Freigabe desselben Inhalts ersetzt die bisherige finale Datei.
+Stimm-ID und Name werden in den Versuchen und im Review gespeichert und angezeigt.
+**Jetzt neu generieren** auf der Review-Seite verwendet die Stimme dieser Aufnahme;
+zum Wechsel eines Inhalts auf eine andere Stimme diese in der App wählen, die
+betreffende Zeile auswählen und die Generierung starten. Bei älteren Review-Einträgen
+ohne Stimm-Metadaten wird die bisherige Konfigurationsstimme verwendet.
