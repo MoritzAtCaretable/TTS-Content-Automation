@@ -37,3 +37,5 @@ audit/
 
 # Lokale Stimmenauswahl
 .tts_voices.json
+.tts_projects.json
+.tts-projects/

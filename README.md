@@ -327,10 +327,55 @@ und wird nicht mit Git synchronisiert. Dieselbe ID wird nur einmal angelegt; üb
 **+** mit derselben ID und einem Anzeigenamen kann sie umbenannt werden.
 
 Ein Generierungslauf verwendet durchgehend die beim Start gewählte Stimme.
-Alle Stimmen nutzen wie bisher denselben Zielordner und dieselben Dateinamen:
+Innerhalb eines Projekts nutzen alle Stimmen denselben Zielordner und dieselben Dateinamen:
 Eine neue Freigabe desselben Inhalts ersetzt die bisherige finale Datei.
 Stimm-ID und Name werden in den Versuchen und im Review gespeichert und angezeigt.
 **Jetzt neu generieren** auf der Review-Seite verwendet die Stimme dieser Aufnahme;
 zum Wechsel eines Inhalts auf eine andere Stimme diese in der App wählen, die
 betreffende Zeile auswählen und die Generierung starten. Bei älteren Review-Einträgen
 ohne Stimm-Metadaten wird die bisherige Konfigurationsstimme verwendet.
+
+### Projekte und paralleles Arbeiten
+
+Ein Projekt entspricht einem **Tabellenblatt im konfigurierten Google Spreadsheet**.
+Oben in der App das Projekt auswählen. **Projekte laden** aktualisiert die Liste,
+zum Beispiel nachdem eine andere Person ein Projekt angelegt oder umbenannt hat.
+Beim ersten Start wird das bisherige Blatt aus `SHEET_NAME` ausgewählt; danach
+merkt sich die App die letzte Auswahl auf diesem Rechner. Ein gelöschtes Blatt
+wird nicht automatisch durch ein anderes ersetzt.
+
+Über **+ → Projektname → Projekt erstellen** wird ein neues Tabellenblatt angelegt
+und direkt ausgewählt. Es enthält die Spalten `id`, `text`, `mode`, `filename`,
+`status`, `reason`, `generated_at`, `qc_state` und `qc_details`, eine fixierte Kopfzeile
+sowie Auswahlfelder für Modus und Status. Blatt und Vorbereitung werden zusammen
+in einem [atomaren Google-Sheets-Aufruf](https://developers.google.com/workspace/sheets/api/guides/batch)
+angelegt. Vorhandene Blätter werden nicht verändert; für die Verarbeitung brauchen
+sie mindestens die Kopfspalten `id`, `text` und `status`. Der bestehende
+Service-Account benötigt weiterhin Bearbeitungsrechte am Spreadsheet.
+
+Jedes Projekt erhält einen eigenen Audio-Unterordner, beispielsweise
+`tts-output/Gedächtnistraining--123456/`. Alle Stimmen dieses Projekts liegen darin
+zusammen. **Ablage ändern…** wählt einen neuen Basisordner, unter dem der
+Projekt-Unterordner liegt. Ordner, Stimme und Modell werden je Projekt lokal
+gespeichert. Die feste Tabellenblatt-ID hält die Zuordnung auch nach einer
+Umbenennung stabil; ein bereits eingerichteter Ausgabeordner bleibt dabei gleich.
+
+Die Zeilenauswahl wird beim Projektwechsel geleert und anschließend aus dem neuen
+Blatt geladen. Nicht eingefügte Texte bleiben während der App-Sitzung als Entwurf
+beim jeweiligen Projekt erhalten. Während einer Generierung oder Review-Aktion
+ist der Projektwechsel gesperrt. Bereits geöffnete Prüfseiten bleiben an ihr
+ursprüngliches Projekt gebunden. **Review zurücksetzen** betrifft nur das aktuell
+ausgewählte Projekt und löscht keine Audiodateien.
+
+Die Einstellungen stehen in `.tts_projects.json`, die getrennten Prüfstände unter
+`.tts-projects/`; beides bleibt lokal und ist von Git ausgeschlossen. Beim ersten
+Öffnen des bisherigen Projekts werden passende Einträge aus `review_data.json`
+einmalig übernommen. Die alte Datei sowie vorhandene Audios bleiben unverändert
+am bisherigen Ort erreichbar. Neue Generierungen aus der Hauptansicht landen im
+Projektordner; die Bearbeitung alter Aufnahmen behält deren bisherigen Zielpfad.
+
+Dieser Modus ist für **unabhängige Arbeit an unterschiedlichen Projekten** gedacht:
+Jede Person nutzt eine eigene App-Installation und wählt ihr Tabellenblatt. Die
+Projekte und Sheet-Status sind gemeinsam sichtbar, Audios und Prüfstände bleiben
+auf dem jeweiligen Rechner. Es gibt weiterhin keine rechnerübergreifende Sperre
+für gleichzeitige Generierungen oder Entscheidungen im selben Projekt.

@@ -78,6 +78,7 @@ except ImportError:
 GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "service_account.json")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "YOUR_SPREADSHEET_ID")
 SHEET_NAME = os.getenv("SHEET_NAME", "Tabellenblatt1")
+WORKSHEET_ID = int(os.environ["TTS_WORKSHEET_ID"]) if os.getenv("TTS_WORKSHEET_ID") else None
 
 # Welche Status-Werte verarbeitet werden
 PROCESS_STATUSES = {"todo", "regenerate"}
@@ -170,8 +171,8 @@ GEMINI_MIN_INTERVAL_SEC = 13
 # Über die .env (OUTPUT_DIR) oder die GUI (Ordner-Auswahl) überschreibbar.
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "tts-output")
 REVIEW_DIR = OUTPUT_DIR   # kein separater Review-Ordner mehr — alles am selben Ort
-REVIEW_HTML = "review.html"
-REVIEW_DATA_FILE = "review_data.json"   # akkumulierte Einträge für die Review-Seite
+REVIEW_HTML = os.getenv("TTS_REVIEW_HTML", "review.html")
+REVIEW_DATA_FILE = os.getenv("TTS_REVIEW_DATA_FILE", "review_data.json")
 
 # QC thresholds
 MAX_RETRIES = 3
@@ -274,8 +275,8 @@ def build_filename(row: dict) -> str:
 # GOOGLE SHEET (Lesen + Zurückschreiben)
 # ─────────────────────────────────────────────
 
-def open_sheet():
-    """Öffnet das Sheet mit Schreibrechten. Returns (worksheet, header_map, records)."""
+def open_spreadsheet():
+    """Open the configured workbook without choosing a worksheet."""
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -283,7 +284,14 @@ def open_sheet():
     creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scopes)
     client = gspread.authorize(creds)
     client.set_timeout(30)
-    ws = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    return client.open_by_key(SPREADSHEET_ID)
+
+
+def open_sheet(sheet_name=None, worksheet_id=None):
+    """Resolve by stable worksheet ID when supplied, including ID zero."""
+    book = open_spreadsheet()
+    gid = WORKSHEET_ID if worksheet_id is None else worksheet_id
+    ws = book.get_worksheet_by_id(int(gid)) if gid is not None else book.worksheet(sheet_name or SHEET_NAME)
 
     header_map, records = parse_sheet_values(ws.get_all_values())
     return ws, header_map, records
@@ -314,7 +322,7 @@ def should_process(status: str) -> bool:
     return s in PROCESS_STATUSES
 
 
-def load_rows():
+def load_rows(sheet_name=None, worksheet_id=None):
     """Liest alle Sheet-Zeilen — für die Auswahl-Tabelle in der GUI.
 
     Anders als main() wird hier nichts verarbeitet und nichts geschrieben:
@@ -324,7 +332,9 @@ def load_rows():
       _row   Zeilennummer im Sheet (wie in der Tabelle sichtbar)
       _open  True, wenn der Status diese Zeile normalerweise verarbeiten würde
     """
-    _ws, _header_map, records = open_sheet()
+    _ws, _header_map, records = open_sheet(sheet_name, worksheet_id)
+    if not {"id", "text", "status"}.issubset(_header_map):
+        raise ValueError("Dieses Tabellenblatt benötigt die Kopfspalten id, text und status.")
     for r in records:
         r["_open"] = should_process(r.get("status", ""))
     return records
@@ -360,7 +370,7 @@ def next_ids(prefix: str, count: int, records: list) -> list:
             for i in range(1, count + 1)]
 
 
-def append_rows(entries: list):
+def append_rows(entries: list, sheet_name=None, worksheet_id=None):
     """Hängt neue Zeilen unten an das Sheet an.
 
     entries: Liste von Dicts {spaltenname: wert}, z.B.
@@ -375,9 +385,9 @@ def append_rows(entries: list):
     """
     if not entries:
         return (None, 0)
-    ws, header_map, records = open_sheet()
-    if not header_map:
-        raise RuntimeError("Das Sheet hat keine Kopfzeile — kann nichts anfügen.")
+    ws, header_map, records = open_sheet(sheet_name, worksheet_id)
+    if not {"id", "text", "status"}.issubset(header_map):
+        raise RuntimeError("Dieses Tabellenblatt benötigt die Kopfspalten id, text und status. Es wurden keine Zeilen eingefügt.")
 
     vorhanden = {(r.get("id", "") or "").strip().lower()
                  for r in records if (r.get("id", "") or "").strip()}
@@ -913,11 +923,12 @@ def _review_qc_html(qc):
     return f'<details class="cmeta"><summary>{summary}</summary>{"".join(parts)}</details>'
 
 
-def _load_review_data() -> dict:
-    if not os.path.exists(REVIEW_DATA_FILE):
+def _load_review_data(data_file=None) -> dict:
+    data_file = data_file or REVIEW_DATA_FILE
+    if not os.path.exists(data_file):
         return {}
     try:
-        with open(REVIEW_DATA_FILE, encoding="utf-8") as f:
+        with open(data_file, encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, dict) or not all(isinstance(e, dict) for e in data.values()):
             raise ValueError("Keine Eintragsliste")
@@ -926,11 +937,17 @@ def _load_review_data() -> dict:
         raise RuntimeError("Review-Daten nicht lesbar; bestehende Datei bleibt erhalten") from e
 
 
-def _save_review_entry(entry: dict, key=None):
-    data = _load_review_data()
+def _save_review_entry(entry: dict, key=None, data_file=None):
+    data = _load_review_data(data_file)
     if key is None:
-        scope = "|".join(str(entry.get(k, "")) for k in ("sheet_id", "sheet_name", "id", "target_path"))
+        worksheet = entry.get("worksheet_id") if entry.get("worksheet_id") is not None else entry.get("sheet_name", "")
+        scope = "|".join(str(v) for v in (entry.get("sheet_id", ""), worksheet, entry.get("id", ""), entry.get("target_path", "")))
         key = "item-" + hashlib.sha256(scope.encode()).hexdigest()[:24]
+        # Preserve history of imported entries, whose old key used the tab title.
+        for previous_key, previous in list(data.items()):
+            if previous_key != key and all(previous.get(k) == entry.get(k) for k in ("sheet_id", "worksheet_id", "id", "target_path")) and entry.get("worksheet_id") is not None:
+                data[key] = data.pop(previous_key)
+                break
         legacy = entry.get("filename")
         old = data.get(legacy)
         if old and old.get("id") == entry.get("id") and old.get("abspath") == entry.get("target_path"):
@@ -942,7 +959,7 @@ def _save_review_entry(entry: dict, key=None):
         if any(previous.get(k) != entry.get(k) for k in fields):
             entry["history"].append({k: previous.get(k) for k in fields})
     data[key] = entry
-    destination = Path(REVIEW_DATA_FILE).resolve()
+    destination = Path(data_file or REVIEW_DATA_FILE).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -971,7 +988,7 @@ def _record_review(row: dict):
         "sources_dir": row.get("_sources_dir", ""),
         "raw_abspath": os.path.abspath(row["_raw_audio_path"]) if row.get("_raw_audio_path") else "",
         "target_path": row.get("_target_path", ""),
-        "sheet_id": SPREADSHEET_ID, "sheet_name": SHEET_NAME,
+        "sheet_id": SPREADSHEET_ID, "sheet_name": SHEET_NAME, "worksheet_id": WORKSHEET_ID,
         "sync_error": row.get("_sync_error", ""), "sync_updates": row.get("_sync_updates", {}),
         "mode": row.get("mode", ""),
         "status": row.get("status", ""),
@@ -1162,13 +1179,14 @@ document.querySelectorAll(".player").forEach(function (p) {
 """
 
 
-def generate_review_html(output_file=REVIEW_HTML):
+def generate_review_html(output_file=None, data_file=None):
     """
     Erstellt die Review-Seite aus den AKKUMULIERTEN Daten (review_data.json)
     im Caretable-Design. Neue Audios kommen hinzu, bestehende bleiben —
     bis zum Reset über die App.
     """
-    data = _load_review_data()
+    output_file = output_file or REVIEW_HTML
+    data = _load_review_data(data_file)
     entries = sorted(data.values(), key=lambda e: e.get("generated_at", ""), reverse=True)
 
     cards = []
@@ -1257,20 +1275,22 @@ def generate_review_html(output_file=REVIEW_HTML):
             .replace("__CARDS__", body)
             .replace("__EMPTYALL__", empty_all))
 
+    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(html)
     return output_file, n_all
 
 
-def reset_review(output_file=REVIEW_HTML):
+def reset_review(output_file=None, data_file=None):
     """Setzt die Review-Seite zurück: Daten löschen, leere Seite schreiben."""
-    if os.path.exists(REVIEW_DATA_FILE):
-        os.remove(REVIEW_DATA_FILE)
-    generate_review_html(output_file)
+    data_file = data_file or REVIEW_DATA_FILE
+    if os.path.exists(data_file):
+        os.remove(data_file)
+    generate_review_html(output_file, data_file)
 
 
 def main(only_rows=None):
-    global _gemini_last_call, _gemini_disabled_for_run, _elevenlabs_pcm_failed
+    global _gemini_last_call, _gemini_disabled_for_run, _elevenlabs_pcm_failed, SHEET_NAME
     _gemini_last_call = 0.0
     _gemini_disabled_for_run = False
     _elevenlabs_pcm_failed = False
@@ -1293,6 +1313,8 @@ def main(only_rows=None):
 
     print("📄 Öffne Google Sheet...")
     ws, header_map, records = open_sheet()
+    if WORKSHEET_ID is not None:
+        SHEET_NAME = ws.title
 
     # Pflichtspalten prüfen
     for col in ("id", "text", "status"):

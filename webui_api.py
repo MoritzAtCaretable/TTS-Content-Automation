@@ -19,10 +19,13 @@ import queue
 import threading
 import subprocess
 import webbrowser
+import copy
+from functools import wraps
 from pathlib import Path
 from typing import List, Optional
 
 from tts_voices import VoiceStore, fetch_voice, validate_voice_id
+from tts_projects import ProjectStore, create_project_sheet, import_legacy_reviews
 
 PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR))
@@ -53,6 +56,17 @@ def _guard(fn):
     return wrapper
 
 
+def _idle(fn):
+    """Serialize project changes with sheet actions and job admission."""
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._job_lock:
+            if self._busy:
+                raise ValueError("Bitte den laufenden Vorgang abwarten.")
+            return fn(self, *args, **kwargs)
+    return wrapper
+
+
 def sheet_url() -> str:
     """URL zum Google Sheet aus der Spreadsheet-ID."""
     sid = pipeline.SPREADSHEET_ID
@@ -62,7 +76,7 @@ def sheet_url() -> str:
 
 
 class Api:
-    def __init__(self, voice_config_path=None) -> None:
+    def __init__(self, voice_config_path=None, project_config_path=None) -> None:
         self._window = None
         self.root = PROJECT_DIR
         self.log_queue: queue.Queue = queue.Queue()
@@ -70,9 +84,9 @@ class Api:
         self.progress = {"done": 0, "total": 0}
         self.cancelled = False
         self._busy = False
-        self._job_lock = threading.Lock()
+        self._job_lock = threading.RLock()
         self._outcome = {"state": "idle", "id": "", "message": "Bereit"}
-        self._review_server = None
+        self._review_servers = {}
         self.voices = VoiceStore(voice_config_path or self.root / ".tts_voices.json", pipeline.VOICE_ID)
         self.model = (pipeline.ELEVENLABS_MODEL
                       if pipeline.ELEVENLABS_MODEL in VOICE_MODELS else VOICE_MODELS[0])
@@ -80,6 +94,12 @@ class Api:
                           if not os.path.isabs(pipeline.OUTPUT_DIR)
                           else Path(pipeline.OUTPUT_DIR))
         self.rows: List[dict] = []          # zuletzt geladener Sheet-Stand
+        self.rows_loaded = False
+        self.output_base = self.folder
+        self.projects = []
+        self.project = None
+        self.project_store = ProjectStore(project_config_path or self.root / ".tts_projects.json", pipeline.SPREADSHEET_ID)
+        self._project_voice = None
 
     # ---------------------------------------------------------------- Zustand
 
@@ -87,31 +107,45 @@ class Api:
     def get_state(self) -> dict:
         return {
             **self.voices.state(),
+            "voice_id": self._project_voice or self.voices.state()["voice_id"],
             "models": VOICE_MODELS,
             "model": self.model,
             "folder": self.folder,
-            "sheet_name": pipeline.SHEET_NAME,
+            "sheet_name": self.project["name"] if self.project else pipeline.SHEET_NAME,
+            "projects": copy.deepcopy(self.projects),
+            "project_id": self.project["id"] if self.project else None,
             "has_sheet_id": bool(sheet_url()),
             "running": self._busy,
         }
 
     @_guard
-    def set_model(self, model: str) -> dict:
+    @_idle
+    def set_model(self, model: str, project_id=None) -> dict:
+        if project_id is not None:
+            self._require_project(project_id)
         if model in VOICE_MODELS:
+            self._remember_project({"model": model})
             self.model = model
         return {}
 
     @_guard
-    def set_voice(self, voice_id: str) -> dict:
+    def set_voice(self, voice_id: str, project_id=None) -> dict:
         with self._job_lock:
+            if project_id is not None:
+                self._require_project(project_id)
             if self._busy:
                 raise ValueError("Bitte den laufenden Vorgang abwarten.")
-            return self.voices.select(voice_id)
+            result = self.voices.select(voice_id)
+            self._remember_project({"voice_id": voice_id})
+            self._project_voice = voice_id if self.project else None
+            return result
 
     @_guard
-    def add_voice(self, voice_id: str, name: str = "") -> dict:
+    def add_voice(self, voice_id: str, name: str = "", project_id=None) -> dict:
         voice_id = validate_voice_id(voice_id)
         with self._job_lock:
+            if project_id is not None:
+                self._require_project(project_id)
             if self._busy:
                 raise ValueError("Bitte den laufenden Vorgang abwarten.")
         existing = next((v for v in self.voices.state()["voices"] if v["id"] == voice_id), None)
@@ -119,17 +153,99 @@ class Api:
         if name.strip():
             voice["name"] = " ".join(name.split())[:100]
         with self._job_lock:
+            if project_id is not None:
+                self._require_project(project_id)
             if self._busy:
                 raise ValueError("Inzwischen wurde ein Lauf gestartet. Bitte danach erneut hinzufügen.")
-            return self.voices.add(voice)
+            result = self.voices.add(voice)
+            self._remember_project({"voice_id": voice_id})
+            self._project_voice = voice_id if self.project else None
+            return result
+
+    # -------------------------------------------------------------- Projekte
+
+    def _require_project(self, expected_id=None):
+        if self.project is None:
+            raise ValueError("Bitte zuerst ein Projekt auswählen oder über + anlegen.")
+        if expected_id is not None and str(expected_id) != self.project["id"]:
+            raise ValueError("Das Projekt wurde inzwischen gewechselt. Bitte die Ansicht neu laden.")
+        return copy.deepcopy(self.project)
+
+    def _remember_project(self, preferences):
+        if self.project:
+            self.project_store.save_project(self.project["id"], preferences)
+
+    def _activate_project(self, selected):
+        context = self.project_store.context(selected, self.root, self.output_base)
+        book = self.project_store.book()
+        legacy_id = book.get("legacy_id")
+        if legacy_id is None:
+            legacy_id = next((p["id"] for p in self.projects if p["name"] == pipeline.SHEET_NAME), "")
+        if context["id"] == legacy_id:
+            import_legacy_reviews(context, self.root / pipeline.REVIEW_DATA_FILE, pipeline.SHEET_NAME)
+        prefs = book.get("projects", {}).get(context["id"], {})
+        voice_id = prefs.get("voice_id") or self.voices.state()["voice_id"]
+        if voice_id and not any(v["id"] == voice_id for v in self.voices.state()["voices"]):
+            voice_id = self.voices.state()["voice_id"]
+        model = prefs.get("model", pipeline.ELEVENLABS_MODEL)
+        if model not in VOICE_MODELS:
+            model = VOICE_MODELS[0]
+        self.project_store.save_project(context["id"], {"name": context["name"], "folder": context["folder"],
+            "voice_id": voice_id, "model": model}, select=True, legacy_id=legacy_id or None)
+        self.project, self.folder, self.model, self._project_voice = context, context["folder"], model, voice_id
+        self.rows, self.rows_loaded = [], False
+
+    @_guard
+    @_idle
+    def list_projects(self):
+        sheets = pipeline.open_spreadsheet().worksheets()
+        self.projects = [{"id": str(ws.id), "name": ws.title} for ws in sheets
+                         if ws._properties.get("sheetType", "GRID") == "GRID"]
+        selected_id = self.project["id"] if self.project else self.project_store.book().get("selected")
+        if selected_id is None:
+            selected_id = next((p["id"] for p in self.projects if p["name"] == pipeline.SHEET_NAME), None)
+        selected = next((p for p in self.projects if p["id"] == selected_id), None)
+        if selected:
+            self._activate_project(selected)
+        else:
+            self.project, self.rows, self.rows_loaded = None, [], False
+        return self.get_state()
+
+    @_guard
+    @_idle
+    def set_project(self, project_id):
+        # Refresh by ID so deleted or renamed worksheets never redirect an action.
+        ws = pipeline.open_spreadsheet().get_worksheet_by_id(int(project_id))
+        selected = {"id": str(ws.id), "name": ws.title}
+        self.projects = [selected if p["id"] == selected["id"] else p for p in self.projects]
+        if not any(p["id"] == selected["id"] for p in self.projects):
+            self.projects.append(selected)
+        self._activate_project(selected)
+        return self.get_state()
+
+    @_guard
+    @_idle
+    def create_project(self, name):
+        selected = create_project_sheet(pipeline.open_spreadsheet(), name)
+        self.projects.append(selected)
+        try:
+            self._activate_project(selected)
+        except Exception as exc:
+            raise RuntimeError("Tabellenblatt wurde angelegt. Bitte die Projektliste neu laden und das Projekt auswählen. " + str(exc)) from exc
+        self._log(f"📁 Projekt „{selected['name']}“ angelegt.")
+        return self.get_state()
 
     # ------------------------------------------------------------ Sheet lesen
 
     @_guard
-    def load_rows(self) -> dict:
+    @_idle
+    def load_rows(self, project_id=None) -> dict:
         """Liest den aktuellen Sheet-Stand für die Tabelle."""
-        rows = pipeline.load_rows()
+        project = self._require_project(project_id)
+        self.rows_loaded = False
+        rows = pipeline.load_rows(worksheet_id=int(project["id"]))
         self.rows = rows
+        self.rows_loaded = True
         out = []
         for r in rows:
             status = (r.get("status", "") or "").strip()
@@ -142,18 +258,20 @@ class Api:
                 "status": status,
                 "open": bool(r.get("_open")),
             })
-        return {"rows": out}
+        return {"rows": out, "project_id": project["id"]}
 
     # -------------------------------------------------------- Zeilen anfügen
 
     @_guard
-    def plan_rows(self, prefix: str, mode: str, text: str) -> dict:
+    @_idle
+    def plan_rows(self, prefix: str, mode: str, text: str, project_id=None) -> dict:
         """Baut aus der Eingabe die neuen Zeilen — ohne etwas zu schreiben.
 
         Eine Zeile = ein Text. "ID | Text" setzt eine eigene ID, sonst wird aus
         dem Präfix fortlaufend numeriert. Das Frontend zeigt das Ergebnis zur
         Bestätigung, bevor commit_rows() tatsächlich schreibt.
         """
+        project = self._require_project(project_id)
         zeilen = [z.strip() for z in (text or "").splitlines() if z.strip()]
         if not zeilen:
             raise ValueError("Kein Text eingegeben. Eine Zeile pro Text.")
@@ -177,7 +295,7 @@ class Api:
             raise ValueError("Für die automatischen IDs fehlt der ID-Präfix. "
                              "Entweder oben einen Präfix eintragen — oder je "
                              "Zeile „ID | Text“ schreiben.")
-        if auto and not self.rows:
+        if auto and not self.rows_loaded:
             raise ValueError("Die Sheet-Zeilen sind noch nicht geladen — ohne "
                              "sie ist die nächste freie Nummer unbekannt. "
                              "Bitte „Neu laden“ drücken.")
@@ -188,26 +306,33 @@ class Api:
             eintraege[i] = {"id": eid, "text": txt, "mode": modus, "status": "todo"}
         for (i, txt), eid in zip(auto, neue_ids):
             eintraege[i] = {"id": eid, "text": txt, "mode": modus, "status": "todo"}
-        return {"entries": eintraege}
+        return {"entries": eintraege, "project_id": project["id"]}
 
     @_guard
-    def commit_rows(self, entries: list) -> dict:
+    @_idle
+    def commit_rows(self, entries: list, project_id=None) -> dict:
         """Schreibt die zuvor geplanten Zeilen ans Sheet."""
-        erste, anzahl = pipeline.append_rows(entries or [])
+        project = self._require_project(project_id)
+        erste, anzahl = pipeline.append_rows(entries or [], worksheet_id=int(project["id"]))
         self._log(f"➕ {anzahl} Zeile(n) ins Sheet eingefügt (ab Zeile {erste}).")
         return {"first": erste, "count": anzahl}
 
     # ------------------------------------------------------------- Aktionen
 
     @_guard
-    def choose_folder(self) -> dict:
+    @_idle
+    def choose_folder(self, project_id=None) -> dict:
+        project = self._require_project(project_id)
         import webview
         start = self.folder if os.path.isdir(self.folder) else str(self.root)
         result = self._window.create_file_dialog(webview.FOLDER_DIALOG,
                                                  directory=start)
         if not result:
             return {"path": None}
-        self.folder = str(Path(result[0]))
+        chosen = Path(result[0])
+        folder = str(chosen if chosen == Path(project["folder"]) else chosen / Path(project["folder"]).name)
+        self._remember_project({"folder": folder})
+        self.folder = self.project["folder"] = folder
         return {"path": self.folder}
 
     @_guard
@@ -216,24 +341,28 @@ class Api:
         if not url:
             raise ValueError("Keine Spreadsheet-ID gefunden. "
                              "Trage SPREADSHEET_ID in die .env ein.")
-        webbrowser.open(url)
+        project = self._require_project()
+        webbrowser.open(url + "#gid=" + project["id"])
         return {}
 
     @_guard
     def open_review(self) -> dict:
         from review_service import ReviewServer
         with self._job_lock:
-            if self._review_server is None:
-                self._review_server = ReviewServer(self, pipeline, self.root)
-        webbrowser.open(self._review_server.url)
-        return {"url": self._review_server.url}
+            project = self._require_project()
+            if project["id"] not in self._review_servers:
+                self._review_servers[project["id"]] = ReviewServer(self, pipeline, self.root, project)
+            server = self._review_servers[project["id"]]
+        webbrowser.open(server.url)
+        return {"url": server.url}
 
     @_guard
-    def reset_review(self) -> dict:
+    def reset_review(self, project_id=None) -> dict:
         with self._job_lock:
             if self._busy:
                 raise ValueError("Bitte den laufenden Vorgang abwarten.")
-            pipeline.reset_review()
+            project = self._require_project(project_id)
+            pipeline.reset_review(project["review_html"], project["review_data"])
         self._log("🗑 Review-Seite zurückgesetzt — neue Audios werden wieder gesammelt.")
         return {}
 
@@ -298,12 +427,17 @@ class Api:
             raise
         return {"job_id": job_id}
 
-    def run_generation(self, selection=None, folder=None, model=None, voice_id=None):
-        voice = self.voices.get(voice_id)
+    def run_generation(self, selection=None, folder=None, model=None, voice_id=None, project=None):
+        project = copy.deepcopy(project) if project is not None else self._require_project()
+        voice = self.voices.get(voice_id or self._project_voice)
         env = os.environ.copy()
         env.update(PYTHONUNBUFFERED="1", ELEVENLABS_MODEL=model or self.model,
-                   OUTPUT_DIR=folder or self.folder,
-                   ELEVENLABS_VOICE_ID=voice["id"], TTS_VOICE_NAME=voice["name"])
+                   OUTPUT_DIR=folder or project["folder"],
+                   ELEVENLABS_VOICE_ID=voice["id"], TTS_VOICE_NAME=voice["name"],
+                   SHEET_NAME=project["name"], TTS_WORKSHEET_ID=project["id"],
+                   SPREADSHEET_ID=project["spreadsheet_id"],
+                   TTS_REVIEW_DATA_FILE=project["review_data"], TTS_REVIEW_HTML=project["review_html"])
+        self._log(f"📁 Projekt: {project['name']}")
         self._log(f"🎙 Stimme: {voice['name']} ({voice['id']})")
         env.pop("TTS_ONLY_ROWS", None)
         env.pop("TTS_SELECTION", None)
@@ -333,25 +467,29 @@ class Api:
             self.process = None
 
     @_guard
-    def start(self, rows: list, all_open: bool = False) -> dict:
+    @_idle
+    def start(self, rows: list, all_open: bool = False, project_id=None) -> dict:
+        project = self._require_project(project_id)
         wanted = {int(n) for n in (rows or [])}
         if not wanted and not all_open:
             raise ValueError("Es ist keine Zeile ausgewählt.")
         selection = None
         if wanted:
+            if not self.rows_loaded:
+                raise ValueError("Bitte die Projektzeilen zuerst neu laden.")
             selected = [r for r in self.rows if r["_row"] in wanted]
             if len(selected) != len(wanted):
                 raise ValueError("Auswahl nicht mehr aktuell. Bitte Sheet neu laden.")
             from tts_identity import resolve_record
             selection = [{k: resolve_record(self.rows, r).get(k, "") for k in ("id", "text", "mode")} for r in selected]
         self.progress = {"done": 0, "total": len(wanted)}
-        folder, model, voice_id = self.folder, self.model, self.voices.get()["id"]
-        result = self.launch_job(lambda: self.run_generation(selection, folder, model, voice_id), "Generierung läuft")
+        folder, model, voice_id = self.folder, self.model, self.voices.get(self._project_voice)["id"]
+        result = self.launch_job(lambda: self.run_generation(selection, folder, model, voice_id, project), "Generierung läuft")
         return {**result, "total": len(wanted)}
 
     def shutdown(self):
-        if self._review_server is not None:
-            self._review_server.close()
+        for server in self._review_servers.values():
+            server.close()
         if self.process is not None:
             self.cancelled = True
             self.process.terminate()

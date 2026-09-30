@@ -22,9 +22,28 @@ from tts_quality import CheckResult, QualityResult
 
 
 class ReviewService:
-    def __init__(self, api, pipeline):
+    def __init__(self, api, pipeline, project=None):
         self.api, self.p = api, pipeline
+        # An already-open review page stays attached to its original project.
+        self.project = copy.deepcopy(project)
         self.whisper_model = None
+
+    def load_entries(self):
+        if self.project is None:
+            return self.p._load_review_data()
+        return {key: entry for key, entry in self.p._load_review_data(self.project["review_data"]).items()
+                if entry.get("sheet_id") == self.project["spreadsheet_id"]
+                and str(entry.get("worksheet_id")) == self.project["id"]}
+
+    def save_entry(self, entry, key):
+        options = {"data_file": self.project["review_data"]} if self.project else {}
+        self.p._save_review_entry(entry, key=key, **options)
+
+    def refresh_html(self):
+        if self.project:
+            self.p.generate_review_html(self.project["review_html"], self.project["review_data"])
+        else:
+            self.p.generate_review_html()
 
     def version(self, entry):
         stamps = []
@@ -35,7 +54,7 @@ class ReviewService:
         return hashlib.sha256(json.dumps([entry, stamps], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def entry(self, key, version=None):
-        entry = self.p._load_review_data().get(key)
+        entry = self.load_entries().get(key)
         if not isinstance(entry, dict):
             raise ValueError("Eintrag nicht mehr vorhanden. Bitte neu laden.")
         if version is not None and version != self.version(entry):
@@ -44,7 +63,7 @@ class ReviewService:
 
     def public_entries(self):
         result = []
-        for key, entry in self.p._load_review_data().items():
+        for key, entry in self.load_entries().items():
             result.append({"key": key, "version": self.version(entry), **{
                 k: entry.get(k) for k in ("id", "text", "filename", "mode", "status", "reason",
                                          "generated_at", "transcript", "wer", "gemini", "model", "qc",
@@ -74,10 +93,14 @@ class ReviewService:
         return target
 
     def current_sheet(self, entry):
-        if (entry.get("sheet_id") and entry["sheet_id"] != self.p.SPREADSHEET_ID
-                or entry.get("sheet_name") and entry["sheet_name"] != self.p.SHEET_NAME):
+        spreadsheet_id = self.project["spreadsheet_id"] if self.project else self.p.SPREADSHEET_ID
+        sheet_name = self.project["name"] if self.project else self.p.SHEET_NAME
+        gid = int(self.project["id"]) if self.project else self.p.WORKSHEET_ID
+        if (entry.get("sheet_id") and entry["sheet_id"] != spreadsheet_id
+                or entry.get("worksheet_id") is not None and str(entry["worksheet_id"]) != str(gid)
+                or entry.get("worksheet_id") is None and entry.get("sheet_name") and entry["sheet_name"] != sheet_name):
             raise ValueError("Dieser Eintrag gehört zu einem anderen Sheet.")
-        ws, headers, rows = self.p.open_sheet()
+        ws, headers, rows = self.p.open_sheet(worksheet_id=gid) if self.project else self.p.open_sheet()
         row = resolve_record(rows, entry)
         if row.get("filename") and self.p.build_filename(row) != self.target(entry).name:
             raise ValueError("Dateiname wurde im Sheet geändert. Bitte dort neu laden und generieren.")
@@ -98,24 +121,27 @@ class ReviewService:
 
     def persist(self, key, entry, status, reason):
         entry.update(status=status, reason=reason, generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                     audio_path_recorded=True, sheet_id=self.p.SPREADSHEET_ID, sheet_name=self.p.SHEET_NAME)
+                     audio_path_recorded=True,
+                     sheet_id=self.project["spreadsheet_id"] if self.project else self.p.SPREADSHEET_ID,
+                     sheet_name=self.project["name"] if self.project else self.p.SHEET_NAME,
+                     worksheet_id=int(self.project["id"]) if self.project else self.p.WORKSHEET_ID)
         updates = {"status": status, "filename": entry["filename"], "reason": reason,
                    "generated_at": entry["generated_at"],
                    "qc_state": "manual_passed" if status == "passed" and entry.get("decision", {}).get("type") == "manual" else status,
                    "qc_details": json.dumps({"automatic": entry.get("qc"), "decision": entry.get("decision")}, ensure_ascii=False)}
         entry["sync_updates"] = updates
         entry["sync_error"] = "Synchronisierung ausstehend"
-        self.p._save_review_entry(entry, key=key)
+        self.save_entry(entry, key)
         try:
             ws, headers, row = self.current_sheet(entry)
             self.p.write_back(ws, headers, row["_row"], updates, expected_row=row)
         except Exception as exc:
             entry["sync_error"] = str(exc)
-            self.p._save_review_entry(entry, key=key)
+            self.save_entry(entry, key)
             raise RuntimeError("Änderung lokal gespeichert. Sheet-Synchronisierung fehlgeschlagen: " + str(exc)) from exc
         entry["sync_error"] = ""
-        self.p._save_review_entry(entry, key=key)
-        self.p.generate_review_html()
+        self.save_entry(entry, key)
+        self.refresh_html()
 
     def verify(self, source, entry):
         return validate_export(source, ffmpeg=self.p.FFMPEG_BIN, ffprobe=self.p.FFPROBE_BIN,
@@ -153,7 +179,7 @@ class ReviewService:
                 raise ValueError("Keine ausstehende Änderung vorhanden")
             self.p.write_back(ws, headers, row["_row"], entry["sync_updates"], expected_row=row)
             entry["sync_error"] = ""
-            self.p._save_review_entry(entry, key=key)
+            self.save_entry(entry, key)
             return {"message": "Sheet-Synchronisierung abgeschlossen."}
         self.current_sheet(entry)
         self.remember(entry)
@@ -163,7 +189,8 @@ class ReviewService:
                 raise ValueError("Unbekanntes Stimmmodell")
             selection = [{k: entry.get(k, "") for k in ("id", "text", "mode", "filename")}]
             voice_id = entry.get("voice_id") or self.api.voices.data["legacy_voice_id"] or self.p.VOICE_ID
-            return self.api.run_generation(selection, str(self.target(entry).parent), model, voice_id)
+            options = {"project": self.project} if self.project else {}
+            return self.api.run_generation(selection, str(self.target(entry).parent), model, voice_id, **options)
         if action == "trim":
             source = self.audio_path(entry, options.get("source", "current"))
             start, end = options.get("start"), options.get("end")
@@ -236,8 +263,8 @@ class ReviewService:
 
 
 class ReviewServer:
-    def __init__(self, api, pipeline, root):
-        self.service = ReviewService(api, pipeline)
+    def __init__(self, api, pipeline, root, project=None):
+        self.service = ReviewService(api, pipeline, project)
         self.root = Path(root)
         self.token = secrets.token_urlsafe(32)
         owner = self
@@ -301,7 +328,8 @@ class ReviewServer:
                 try:
                     route, query = self.route()
                     if route == "api/entries":
-                        return self.json_response({"entries": owner.service.public_entries(), "models": api.get_state()["models"]})
+                        return self.json_response({"entries": owner.service.public_entries(), "models": api.get_state()["models"],
+                                                   "project": owner.service.project["name"] if owner.service.project else None})
                     if route == "api/state":
                         return self.json_response(api.job_state())
                     if route.startswith("audio/"):

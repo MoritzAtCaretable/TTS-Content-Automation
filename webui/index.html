@@ -32,6 +32,13 @@
   <!-- ═══════════ Scroll-Inhalt ═══════════ -->
   <div class="wrap ct-scroll">
 
+    <div class="card project-card">
+      <div><h2>Projekt</h2><div class="hint">Ein Projekt = ein Tabellenblatt</div></div>
+      <label class="field project-field"><div style="flex:1;min-width:0"><div class="cap">Aktuelles Projekt</div><select id="project" aria-label="Aktuelles Projekt"><option value="">Projekte werden geladen…</option></select></div><span aria-hidden="true">⌄</span></label>
+      <button class="btn turq voice-add" id="btnAddProject" title="Projekt erstellen" aria-label="Projekt erstellen">+</button>
+      <button class="btn quiet" id="btnReloadProjects">Projekte laden</button>
+    </div>
+
     <div class="row2">
       <!-- ElevenLabs -->
       <div class="card">
@@ -55,8 +62,8 @@
 
       <!-- Zielordner -->
       <div class="card">
-        <h2>Zielordner</h2>
-        <div class="hint">Hier landen die fertigen Opus-Dateien</div>
+        <h2>Projektordner</h2>
+        <div class="hint">Eigener Unterordner für die Audios dieses Projekts</div>
         <div style="display:flex;align-items:center;gap:12px;margin-top:16px">
           <div class="field" style="flex:1;min-width:0">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="var(--tx2)" style="flex:none"><path d="M3 7.2A2.2 2.2 0 0 1 5.2 5h3.5l1.9 2.4H19a2.2 2.2 0 0 1 2.2 2.2v7.6A2.2 2.2 0 0 1 19 19.4H5.2A2.2 2.2 0 0 1 3 17.2Z"></path></svg>
@@ -64,7 +71,7 @@
           </div>
           <button class="btn turq" id="btnFolder" style="height:52px;padding:0 20px">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2 2 0 0 1 5 5.5h3.6l1.8 2.2H19a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path><path d="M12 10.5v6M9 13.5l3-3 3 3"></path></svg>
-            Durchsuchen…
+            Ablage ändern…
           </button>
         </div>
       </div>
@@ -191,6 +198,15 @@
 
 <div id="toast"></div>
 <div id="modal"></div>
+<dialog id="projectDialog" aria-labelledby="projectDialogTitle">
+  <form id="projectForm">
+    <h3 id="projectDialogTitle">Projekt erstellen</h3>
+    <p>Im verbundenen Google Sheet wird ein neues Tabellenblatt mit allen benötigten Spalten angelegt.</p>
+    <label class="stack"><div class="cap">Projektname</div><input id="newProjectName" type="text" required maxlength="100" autocomplete="off" placeholder="z. B. Gedächtnistraining" autofocus></label>
+    <p id="projectError" role="alert" hidden></p>
+    <div class="acts"><button class="btn quiet" type="button" id="cancelProject">Abbrechen</button><button class="btn turq" type="submit" id="saveProject">Projekt erstellen</button></div>
+  </form>
+</dialog>
 <dialog id="voiceDialog" aria-labelledby="voiceDialogTitle">
   <form id="voiceForm">
     <h3 id="voiceDialogTitle">Stimme hinzufügen</h3>

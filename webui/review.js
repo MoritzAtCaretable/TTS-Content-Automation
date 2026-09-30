@@ -124,6 +124,10 @@ $('#detail').addEventListener('close', () => {
 });
 async function reload() {
   const data = await request('api/entries');
+  if (data.project) {
+    $('#project-name').textContent = `Projekt: ${data.project}`;
+    document.title = `${data.project} · TTS Review`;
+  }
   const order = new Map(entries.map((entry, index) => [entry.key, index]));
   entries = data.entries.sort((a, b) => (order.get(a.key) ?? -1) - (order.get(b.key) ?? -1));
   models = data.models;

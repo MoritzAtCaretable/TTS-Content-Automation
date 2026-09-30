@@ -63,6 +63,7 @@ class VoiceTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
     def test_selected_voice_reaches_subprocess_with_shared_output_folder(self):
+        self.api.project = self.api.project_store.context({'id':'0','name':'Test'}, self.tmp.name, self.tmp.name)
         self.api.voices.add({'id': self.second, 'name': 'Anna'})
         process = Mock(stdout=io.StringIO('@@PROGRESS 1/1\n'))
         process.wait.return_value = 0
@@ -74,6 +75,7 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(env['OUTPUT_DIR'], '/tmp/shared-output')
 
     def test_job_captures_voice_before_background_execution(self):
+        self.api.project = self.api.project_store.context({'id':'0','name':'Test'}, self.tmp.name, self.tmp.name)
         self.api.voices.add({'id': self.second, 'name': 'Anna'})
         with patch.object(self.api, 'launch_job', return_value={}) as launch, patch.object(self.api, 'run_generation') as generate:
             self.api.start([], all_open=True)

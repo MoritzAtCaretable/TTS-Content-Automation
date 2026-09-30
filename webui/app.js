@@ -14,6 +14,8 @@ const S = {
   adding: false,
   lastJob: "",
   voicePending: false,
+  projectPending: false,
+  drafts: {},
 };
 
 /* ---------- kleine Helfer ---------- */
@@ -76,14 +78,14 @@ function renderVoices(data) {
   voiceControls();
 }
 function voiceControls() {
-  $("#voice").disabled = S.running || S.voicePending;
-  $("#btnAddVoice").disabled = S.running || S.voicePending;
-  updateSel();
+  $("#voice").disabled = S.running || S.voicePending || S.projectPending;
+  $("#btnAddVoice").disabled = S.running || S.voicePending || S.projectPending;
+  projectControls();
 }
 async function changeVoice() {
   S.voicePending = true;
   voiceControls();
-  const result = await api("set_voice", $("#voice").value);
+  const result = await api("set_voice", $("#voice").value, S.state?.project_id);
   S.voicePending = false;
   renderVoices(result || S.state);
 }
@@ -103,7 +105,7 @@ async function saveVoice(event) {
   $("#saveVoice").textContent = "Stimme wird geprüft…";
   $("#voiceError").hidden = true;
   try {
-    const result = await window.pywebview.api.add_voice($("#newVoiceId").value, $("#newVoiceName").value);
+    const result = await window.pywebview.api.add_voice($("#newVoiceId").value, $("#newVoiceName").value, S.state?.project_id);
     if (!result || result.ok === false) throw Error(result?.error || "Stimme konnte nicht hinzugefügt werden.");
     renderVoices(result);
     $("#voiceDialog").close();
@@ -118,6 +120,88 @@ async function saveVoice(event) {
     $("#saveVoice").textContent = "Hinzufügen";
     voiceControls();
   }
+}
+
+/* ---------- Projekte ---------- */
+function projectControls() {
+  const blocked = S.running || S.projectPending || S.loading || S.adding || S.voicePending;
+  for (const id of ['project', 'btnAddProject', 'btnReloadProjects']) $("#" + id).disabled = blocked;
+  for (const id of ['btnSheet', 'btnReview', 'btnResetReview', 'model', 'btnFolder', 'btnReload', 'btnAdd']) {
+    $("#" + id).disabled = blocked || !S.state?.project_id;
+  }
+  for (const id of ['prefix', 'newMode', 'newText']) $("#" + id).disabled = blocked || !S.state?.project_id;
+  $('#btnAdd').disabled = blocked || !S.state?.project_id || !S.loaded;
+  updateSel();
+}
+function applyProject(data) {
+  const oldId = S.state?.project_id;
+  if (oldId) S.drafts[oldId] = {prefix: $('#prefix').value, mode: $('#newMode').value, text: $('#newText').value};
+  S.state = data;
+  const options = (data.projects || []).map(p => `<option value="${esc(p.id)}" ${p.id === data.project_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  $('#project').innerHTML = (data.project_id ? '' : '<option value="">Projekt auswählen oder über + erstellen</option>') + options;
+  $('#project').title = data.sheet_name || '';
+  $('#folder').textContent = data.project_id ? data.folder : 'Bitte ein Projekt auswählen';
+  $('#folder').title = data.project_id ? data.folder : '';
+  $('#model').innerHTML = (data.models || []).map(m => `<option${m === data.model ? ' selected' : ''}>${esc(m)}</option>`).join('');
+  if (oldId !== data.project_id) {
+    const draft = S.drafts[data.project_id] || {};
+    $('#prefix').value = draft.prefix || '';
+    $('#newMode').value = draft.mode || 'Einzelwort';
+    $('#newText').value = draft.text || '';
+  }
+  S.rows = []; S.sel.clear(); S.loaded = false;
+  renderRows(); renderVoices(data);
+}
+async function refreshProjects() {
+  if (S.running || S.projectPending || S.loading || S.adding || S.voicePending) return;
+  S.projectPending = true; voiceControls();
+  const data = await api('list_projects');
+  S.projectPending = false;
+  if (data) applyProject(data);
+  else if (!S.state?.project_id) {
+    $('#project').innerHTML = '<option value="">Projekte konnten nicht geladen werden</option>';
+    $('#shDot').style.background = 'var(--ct_fail)';
+    $('#shVal').textContent = 'nicht erreichbar';
+  }
+  voiceControls();
+  if (data?.project_id) await loadRows(true);
+}
+async function changeProject() {
+  const id = $('#project').value;
+  if (!id || S.projectPending || S.running) return;
+  S.projectPending = true; voiceControls();
+  const data = await api('set_project', id);
+  S.projectPending = false;
+  if (data) applyProject(data);
+  else $('#project').value = S.state?.project_id || '';
+  voiceControls();
+  if (data) await loadRows(false);
+}
+function openProjectDialog() {
+  if (S.running || S.projectPending) return;
+  $('#projectForm').reset(); $('#projectError').hidden = true;
+  $('#projectDialog').showModal();
+}
+async function saveProject(event) {
+  event.preventDefault();
+  if (S.projectPending || S.running) return;
+  S.projectPending = true; voiceControls();
+  for (const id of ['newProjectName', 'saveProject', 'cancelProject']) $('#' + id).disabled = true;
+  $('#saveProject').textContent = 'Wird angelegt…'; $('#projectError').hidden = true;
+  let created = false;
+  try {
+    const data = await window.pywebview.api.create_project($('#newProjectName').value);
+    if (!data || data.ok === false) throw Error(data?.error || 'Projekt konnte nicht erstellt werden.');
+    applyProject(data); $('#projectDialog').close(); created = true;
+    toast('Projekt und Tabellenblatt angelegt.', 'ok');
+  } catch (error) {
+    $('#projectError').textContent = error.message; $('#projectError').hidden = false;
+  } finally {
+    S.projectPending = false;
+    for (const id of ['newProjectName', 'saveProject', 'cancelProject']) $('#' + id).disabled = false;
+    $('#saveProject').textContent = 'Projekt erstellen'; voiceControls();
+  }
+  if (created) await loadRows(false);
 }
 
 /* ---------- Sheet-Tabelle ---------- */
@@ -165,7 +249,7 @@ function updateSel() {
     $("#scope").textContent = total
       ? `${n} ausgewählt — verarbeitet wird genau diese Auswahl`
       : "";
-    $("#btnStart").disabled = S.loading || S.adding || S.voicePending || !S.state?.voice_id || !S.loaded || n === 0;
+    $("#btnStart").disabled = S.loading || S.adding || S.voicePending || S.projectPending || !S.state?.project_id || !S.state?.voice_id || !S.loaded || n === 0;
   }
 }
 
@@ -178,18 +262,20 @@ function toggleRow(row) {
 }
 
 async function loadRows(quiet, selectOpen = false) {
-  if (S.loading || S.running) return;
+  if (S.loading || S.running || S.projectPending || !S.state?.project_id) return;
   S.loading = true;
-  updateSel();
+  projectControls();
   $("#btnReload").disabled = true;
   $("#selText").textContent = "Lade Sheet…";
   if (!S.rows.length) renderRows();
 
-  const r = await api("load_rows");
+  const projectId = S.state.project_id;
+  const r = await api("load_rows", projectId);
   S.loading = false;
-  $("#btnReload").disabled = false;
+  projectControls();
 
-  if (!r) {
+  if (!r || r.project_id !== S.state.project_id) {
+    S.rows = []; S.sel.clear(); S.loaded = false; renderRows();
     $("#shDot").style.background = "var(--ct_fail)";
     $("#shVal").textContent = "nicht erreichbar";
     $("#selText").textContent = "Laden fehlgeschlagen.";
@@ -205,54 +291,53 @@ async function loadRows(quiet, selectOpen = false) {
   $("#shDot").style.background = "var(--ct_correct)";
   $("#shVal").textContent = "verbunden";
   renderRows();
+  projectControls();
   const offen = S.rows.filter(x => x.open).length;
-  if (!quiet) addLog(`📄 ${S.rows.length} Zeilen geladen, ${offen} davon offen.`);
+  if (!quiet) addLog(`📄 ${S.state.sheet_name}: ${S.rows.length} Zeilen geladen, ${offen} davon offen.`);
 }
 
 /* ---------- Neue Texte ---------- */
 async function addRows() {
   if (S.running) { toast("Bitte warten, bis der aktuelle Lauf beendet ist."); return; }
-  if (S.adding) return;
+  if (S.adding || S.loading || S.projectPending || !S.state?.project_id) return;
+  S.adding = true; projectControls();
+  try {
+    const plan = await api("plan_rows", $("#prefix").value, $("#newMode").value, $("#newText").value, S.state.project_id);
+    if (!plan) return;
+    const entries = plan.entries || [];
 
-  const plan = await api("plan_rows", $("#prefix").value, $("#newMode").value, $("#newText").value);
-  if (!plan) return;
-  const entries = plan.entries || [];
+    const pre = entries.slice(0, 10).map(e => `${e.id}   →   ${short(e.text, 46)}`).join("\n")
+      + (entries.length > 10 ? `\n… und ${entries.length - 10} weitere` : "");
+    const ok = await confirmBox({
+      title: "Ins Sheet einfügen",
+      body: `Projekt: ${S.state.sheet_name}\n${entries.length} neue Zeile(n) unten anfügen?\nModus: ${$("#newMode").value} · Status: todo`,
+      pre, ok: "Einfügen",
+    });
+    if (!ok) return;
 
-  const pre = entries.slice(0, 10).map(e => `${e.id}   →   ${short(e.text, 46)}`).join("\n")
-    + (entries.length > 10 ? `\n… und ${entries.length - 10} weitere` : "");
-  const ok = await confirmBox({
-    title: "Ins Sheet einfügen",
-    body: `${entries.length} neue Zeile(n) unten anfügen?\nModus: ${$("#newMode").value} · Status: todo`,
-    pre, ok: "Einfügen",
-  });
-  if (!ok) return;
+    const res = await api("commit_rows", entries, plan.project_id);
+    if (!res) return;
 
-  S.adding = true;
-  $("#btnAdd").disabled = true;
-  const res = await api("commit_rows", entries);
-  S.adding = false;
-  $("#btnAdd").disabled = false;
-  if (!res) return;
-
-  $("#newText").value = "";
-  toast(`${res.count} Zeile(n) eingefügt.`, "ok");
-  await loadRows(true);
+    $("#newText").value = "";
+    toast(`${res.count} Zeile(n) eingefügt.`, "ok");
+    await loadRows(true);
+  } finally { S.adding = false; projectControls(); }
 }
 
 /* ---------- Lauf ---------- */
 async function start() {
-  if (S.running || S.loading || S.adding || S.voicePending || !S.state?.voice_id || !S.loaded) return;
+  if (S.running || S.loading || S.adding || S.voicePending || S.projectPending || !S.state?.project_id || !S.state?.voice_id || !S.loaded) return;
   const rows = Array.from(S.sel).sort((a, b) => a - b);
   const allOpen = !S.loaded || !S.rows.length;     // Tabelle leer → Status-Filter
   if (!rows.length && !allOpen) {
     toast("Es ist keine Zeile ausgewählt. Hake an, was verarbeitet werden soll — oder nutze „Nur offene“.", "err");
     return;
   }
-  const r = await api("start", rows, allOpen);
+  const r = await api("start", rows, allOpen, S.state.project_id);
   if (!r) return;
 
   const liste = rows.slice(0, 12).join(", ") + (rows.length > 12 ? " …" : "");
-  addLog(`\n${"─".repeat(60)}\nStarte mit Modell: ${$("#model").value}`);
+  addLog(`\n${"─".repeat(60)}\nProjekt: ${S.state.sheet_name}\nStarte mit Modell: ${$("#model").value}`);
   addLog(rows.length
     ? `Umfang: ${rows.length} ausgewählte Zeile(n) — ${liste}\n${"─".repeat(60)}`
     : `Umfang: alle offenen Zeilen (Status-Filter aus dem Sheet)\n${"─".repeat(60)}`);
@@ -286,6 +371,7 @@ function setRunning(on, total) {
     $("#barFill").style.width = "0%";
     updateSel();
   }
+  projectControls();
 }
 
 /* ---------- Protokoll ---------- */
@@ -354,17 +440,24 @@ async function boot() {
     $("#shVal").textContent = st.has_sheet_id ? "…" : "keine ID";
     if (!st.has_sheet_id) $("#shDot").style.background = "var(--ct_F1)";
   }
-  addLog("TTS Studio bereit. Stimme, Modell und Zielordner wählen, dann Start.");
+  addLog("TTS Studio bereit. Projekt und Stimme wählen, dann Start.");
 
   /* Ereignisse */
+  $('#project').onchange = changeProject;
+  $('#btnReloadProjects').onclick = refreshProjects;
+  $('#btnAddProject').onclick = openProjectDialog;
+  $('#projectForm').onsubmit = saveProject;
+  $('#newProjectName').oninput = () => { $('#projectError').hidden = true; };
+  $('#cancelProject').onclick = () => $('#projectDialog').close();
+  $('#projectDialog').addEventListener('cancel', event => { if (S.projectPending) event.preventDefault(); });
   $("#voice").onchange = changeVoice;
   $("#btnAddVoice").onclick = openVoiceDialog;
   $("#voiceForm").onsubmit = saveVoice;
   $("#cancelVoice").onclick = () => $("#voiceDialog").close();
   $("#voiceDialog").addEventListener("cancel", event => { if (S.voicePending) event.preventDefault(); });
-  $("#model").onchange = () => api("set_model", $("#model").value);
+  $("#model").onchange = () => api("set_model", $("#model").value, S.state?.project_id);
   $("#btnFolder").onclick = async () => {
-    const r = await api("choose_folder");
+    const r = await api("choose_folder", S.state?.project_id);
     if (r && r.path) { $("#folder").textContent = r.path; $("#folder").title = r.path; }
   };
   $("#btnReload").onclick = () => loadRows(false);
@@ -386,13 +479,14 @@ async function boot() {
   $("#btnReview").onclick = () => api("open_review");
   $("#btnResetReview").onclick = async () => {
     if (S.running) { toast("Bitte warten, bis der aktuelle Lauf beendet ist."); return; }
+    const projectId = S.state.project_id;
     const ok = await confirmBox({
       title: "Review zurücksetzen",
-      body: "Alle Einträge von der Review-Seite entfernen?\n\nDie Audio-Dateien selbst bleiben erhalten — nur die Übersicht wird geleert. Neu generierte Audios erscheinen danach wieder.",
+      body: `Alle Prüfungen im Projekt „${S.state.sheet_name}“ aus der Übersicht entfernen?\n\nDie Audio-Dateien bleiben erhalten. Andere Projekte bleiben unverändert.`,
       ok: "Zurücksetzen", danger: true,
     });
     if (!ok) return;
-    if (await api("reset_review")) toast("Review-Seite zurückgesetzt.", "ok");
+    if (await api("reset_review", projectId)) toast("Projekt-Review zurückgesetzt.", "ok");
   };
   $("#btnUpdate").onclick = async () => {
     const r = await api("check_update");
@@ -405,7 +499,7 @@ async function boot() {
 
   initGrips();
   tick();
-  loadRows(false);
+  refreshProjects();
 }
 
 if (window.pywebview && window.pywebview.api) boot();
