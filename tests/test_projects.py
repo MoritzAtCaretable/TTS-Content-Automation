@@ -73,11 +73,12 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(self.api.model, 'eleven_flash_v2_5')
         self.select(22)
         self.assertEqual(self.api.model, 'eleven_flash_v2_5')
-        self.assertTrue(self.api.set_model('eleven_multilingual_v2', '22')['ok'])
+        self.assertIn('eleven_v4', self.api.get_state()['models'])
+        self.assertTrue(self.api.set_model('eleven_v4', '22')['ok'])
         self.select(0)
-        self.assertEqual(self.api.model, 'eleven_multilingual_v2')
-        self.assertEqual(self.new_api().model, 'eleven_multilingual_v2')
-        self.assertEqual(self.api.project_store.data['model'], 'eleven_multilingual_v2')
+        self.assertEqual(self.api.model, 'eleven_v4')
+        self.assertEqual(self.new_api().model, 'eleven_v4')
+        self.assertEqual(self.api.project_store.data['model'], 'eleven_v4')
         self.assertTrue(all('model' not in p for p in self.api.project_store.book()['projects'].values()))
 
     def test_failed_global_model_save_keeps_previous_selection(self):

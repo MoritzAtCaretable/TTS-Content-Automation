@@ -455,7 +455,7 @@ def text_to_speech(text: str, output_path: str, seed: int = None,
     global _elevenlabs_pcm_failed
 
     if single_word_mode:
-        pause = "..." if ELEVENLABS_MODEL == "eleven_v3" else f'<break time="{SINGLE_WORD_BREAK}" />'
+        pause = "..." if ELEVENLABS_MODEL in {"eleven_v3", "eleven_v4"} else f'<break time="{SINGLE_WORD_BREAK}" />'
         tts_text = f'{SINGLE_WORD_LEAD_IN} {pause} {text}.'
     else:
         tts_text = text
@@ -469,6 +469,10 @@ def text_to_speech(text: str, output_path: str, seed: int = None,
     }
     if ELEVENLABS_MODEL == "eleven_v3":
         payload["voice_settings"].pop("use_speaker_boost", None)
+    elif ELEVENLABS_MODEL == "eleven_v4":
+        # v4 only supports Stability and Similarity (no Style, Speed or Boost).
+        payload["voice_settings"] = {key: value for key, value in VOICE_SETTINGS.items()
+                                     if key in {"stability", "similarity_boost"}}
     if ELEVENLABS_LANGUAGE_CODE:
         payload["language_code"] = ELEVENLABS_LANGUAGE_CODE
     if seed is not None:

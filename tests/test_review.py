@@ -115,9 +115,10 @@ class ReviewTests(unittest.TestCase):
             generate.assert_not_called()
 
     def test_regenerate_passes_stable_selection_folder_and_model(self):
-        with patch.object(self.api,'run_generation',return_value={'message':'done'}) as generate:
-            self.perform('regenerate',{'model':'eleven_flash_v2_5'})
-        generate.assert_called_once_with([{'id':'apple','text':'Apfel','mode':'word','filename':'apple.opus'}],str(self.root),'eleven_flash_v2_5',pipeline.VOICE_ID)
+        for model in ('eleven_flash_v2_5', 'eleven_v4'):
+            with self.subTest(model=model), patch.object(self.api,'run_generation',return_value={'message':'done'}) as generate:
+                self.perform('regenerate',{'model':model})
+            generate.assert_called_once_with([{'id':'apple','text':'Apfel','mode':'word','filename':'apple.opus'}],str(self.root),model,pipeline.VOICE_ID)
 
     def test_recheck_reuses_audio_without_tts_and_publishes_only_pass(self):
         # Verification and provider QC are isolated; actual exporter is tested above.

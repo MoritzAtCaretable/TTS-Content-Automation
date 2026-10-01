@@ -47,6 +47,7 @@ VOICE_MODELS = [
     "eleven_flash_v2_5",
     "eleven_multilingual_v2",
     "eleven_v3",
+    "eleven_v4",
 ]
 
 # ---------------------------------------------------------------------------

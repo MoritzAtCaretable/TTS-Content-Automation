@@ -94,7 +94,10 @@ Die Karte **Sheet-Zeilen** zeigt den Inhalt des Google Sheets direkt in der App 
 Zeilennummer, ID, Text, Modus und Status (farbig). Damit muss man das Sheet nicht
 mehr öffnen, um zu sehen oder zu bestimmen, was generiert wird.
 
-- **Klick auf eine Zeile** setzt/entfernt den Haken.
+- **Klick auf eine Zeile** wählt nur diese Zeile aus.
+- **Shift-Klick** wählt den Bereich zwischen der zuletzt angeklickten und der aktuellen Zeile aus, auch rückwärts. Weitere Shift-Klicks vergrößern oder verkleinern diesen Bereich.
+- **Alt/⌥-Klick** oder **Klick auf das Häkchen** fügt eine einzelne Zeile hinzu oder entfernt sie, ohne die übrige Auswahl zu ändern. Strg/Cmd-Klick funktioniert ebenfalls.
+- **Alt/⌥ + Shift-Klick** ergänzt einen Bereich zur bestehenden Auswahl.
 - **Nur offene** — Zeilen mit `todo`, `regenerate` oder leerem Status.
 - **Nur Review** — alle Zeilen mit `review needed` (die üblichen Nachzügler).
 - **Alle** / **Keine** — Komplettauswahl.
@@ -188,6 +191,7 @@ Die Regressionstests laufen ohne API-Aufrufe oder Modelldownloads:
 
 ```
 venv/bin/python -m unittest discover -s tests -v
+node --test tests/test_selection.cjs
 ```
 
 Unter Windows entsprechend `venv\Scripts\python -m unittest discover -s tests -v`.
@@ -200,7 +204,12 @@ Einzelwörter werden mit dem ElevenLabs-Endpunkt `with-timestamps` erzeugt. Die
 Zeichen-Zeitstempel müssen Einleitung und Zieltext eindeutig abbilden. Geschnitten
 wird mit Sicherheitsabstand an ruhigen Signalgrenzen. Leise Auslaute können die
 Endgrenze nach außen verschieben. Fehlen passende Zeitstempel oder sichere Grenzen,
-bleibt das Original für Review erhalten. Eleven v3 erhält keine SSML-Pausentags.
+bleibt das Original für Review erhalten. Eleven v3 und v4 erhalten keine SSML-Pausentags.
+
+**Eleven v4 (`eleven_v4`)** steht in der App und für Neugenerierungen auf der
+Prüfseite zur Auswahl. Die Anfragen verwenden die von v4 unterstützten
+Stimmeinstellungen Stability und Similarity; Style, Speed und Speaker Boost
+werden nicht mitgesendet. Siehe [ElevenLabs-Modellbeschreibung](https://elevenlabs.io/docs/overview/capabilities/text-to-speech/eleven-v4).
 
 Der Export erzeugt zunächst eine temporäre Datei. Bei aktiviertem Postprocessing
 werden Randstille und Schutzpausen angepasst, Fades nur innerhalb dieser Pausen

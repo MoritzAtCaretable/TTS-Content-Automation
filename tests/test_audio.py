@@ -139,7 +139,7 @@ class ProviderAndPipelineTests(unittest.TestCase):
         response = Mock(status_code=200)
         response.json.return_value = {"audio_base64": base64.b64encode(b"\x01\x00" * 24000).decode(),
                                      "normalized_alignment": alignment()}
-        for model in ("eleven_v3", "eleven_turbo_v2_5"):
+        for model in ("eleven_v4", "eleven_v3", "eleven_turbo_v2_5"):
             with self.subTest(model=model), tempfile.TemporaryDirectory() as tmp, \
                     patch.object(pipeline, "ELEVENLABS_MODEL", model), \
                     patch.object(pipeline, "_elevenlabs_pcm_failed", False), \
@@ -149,7 +149,26 @@ class ProviderAndPipelineTests(unittest.TestCase):
                 args = post.call_args
                 self.assertIn("/with-timestamps?", args.args[0])
                 self.assertIn("timeout", args.kwargs)
-                self.assertEqual("<break" in args.kwargs["json"]["text"], model != "eleven_v3")
+                self.assertEqual("<break" in args.kwargs["json"]["text"], model == "eleven_turbo_v2_5")
+                self.assertEqual(args.kwargs["json"]["model_id"], model)
+
+    def test_v4_requests_only_supported_voice_settings_for_both_modes(self):
+        response = Mock(status_code=200, content=b"\x01\x00" * 24000)
+        response.json.return_value = {"audio_base64": base64.b64encode(response.content).decode(),
+                                     "normalized_alignment": alignment()}
+        original_settings = dict(pipeline.VOICE_SETTINGS)
+        for word_mode in (False, True):
+            with self.subTest(word_mode=word_mode), tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(pipeline, "ELEVENLABS_MODEL", "eleven_v4"), \
+                    patch.object(pipeline, "_elevenlabs_pcm_failed", False), \
+                    patch.object(pipeline.requests, "post", return_value=response) as post:
+                raw = pipeline.text_to_speech("Banane", str(Path(tmp) / "raw"), seed=42, single_word_mode=word_mode)
+                payload = post.call_args.kwargs["json"]
+                self.assertEqual(payload["voice_settings"], {"stability": 0.5, "similarity_boost": 0.75})
+                self.assertEqual(payload["seed"], 42)
+                self.assertEqual(payload["language_code"], "de")
+                self.assertTrue(Path(raw).is_file())
+                self.assertEqual(pipeline.VOICE_SETTINGS, original_settings)
 
     def test_pcm_fallback_keeps_timestamp_endpoint(self):
         refused = Mock(status_code=400, text="output_format pcm not allowed")

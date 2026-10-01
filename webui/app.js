@@ -8,6 +8,8 @@ const S = {
   state: null,
   rows: [],            // [{row,id,text,mode,status,open}]
   sel: new Set(),      // angehakte Zeilennummern
+  selectionAnchor: null,
+  rangeBase: null,
   loaded: false,
   loading: false,
   running: false,
@@ -160,7 +162,7 @@ function applyProject(data) {
     $('#newMode').value = draft.mode || 'Einzelwort';
     $('#newText').value = draft.text || '';
   }
-  S.rows = []; S.sel.clear(); S.loaded = false;
+  S.rows = []; S.sel.clear(); S.loaded = false; resetSelectionAnchor();
   renderRows(); renderVoices(data);
 }
 async function refreshProjects() {
@@ -238,8 +240,8 @@ function renderRows() {
     const on = S.sel.has(r.row);
     const cls = statusClass(r.status);
     const label = r.status.trim() || "leer → todo";
-    return `<div class="grid trow" data-row="${r.row}">
-      <div><div class="box${on ? " on" : ""}"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"></path></svg></div></div>
+    return `<div class="grid trow${on ? ' selected' : ''}" data-row="${r.row}">
+      <div><div class="box${on ? " on" : ""}" role="checkbox" tabindex="0" aria-checked="${on}" aria-label="${esc(r.id)} auswählen"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"></path></svg></div></div>
       <div class="num">${r.row}</div>
       <div class="rid" title="${esc(r.id)}">${esc(r.id)}</div>
       <div class="txt" title="${esc(r.text)}">${esc(r.text)}</div>
@@ -264,17 +266,50 @@ function updateSel() {
   }
 }
 
-function toggleRow(row) {
-  if (S.running) return;
-  if (S.sel.has(row)) S.sel.delete(row); else S.sel.add(row);
-  const node = $(`.trow[data-row="${row}"] .box`);
-  if (node) node.classList.toggle("on", S.sel.has(row));
+function resetSelectionAnchor() {
+  S.selectionAnchor = null;
+  S.rangeBase = null;
+}
+
+function selectionBlocked() {
+  return S.running || S.loading || S.projectPending || S.adding;
+}
+
+function selectRow(row, event = {}, checkbox = false) {
+  if (selectionBlocked()) return;
+  const index = S.rows.findIndex(r => r.row === row);
+  if (index < 0) return;
+  const anchor = S.rows.findIndex(r => r.row === S.selectionAnchor);
+  const additive = event.altKey || event.ctrlKey || event.metaKey;
+  if (event.shiftKey && anchor >= 0) {
+    // Keep the original anchor when extending or shrinking a range in either direction.
+    if (S.rangeBase === null) S.rangeBase = new Set(S.sel);
+    S.sel = new Set(additive ? S.rangeBase : []);
+    for (const item of S.rows.slice(Math.min(anchor, index), Math.max(anchor, index) + 1)) {
+      S.sel.add(item.row);
+    }
+  } else {
+    if (additive || (checkbox && !event.shiftKey)) {
+      if (S.sel.has(row)) S.sel.delete(row); else S.sel.add(row);
+    } else S.sel = new Set([row]);
+    S.selectionAnchor = row;
+    S.rangeBase = null;
+  }
+  // Update in place so focus and the table's scroll position survive range clicks.
+  $$('.trow', $('#tbody')).forEach(node => {
+    const on = S.sel.has(Number(node.dataset.row));
+    node.classList.toggle('selected', on);
+    const box = $('.box', node);
+    box.classList.toggle('on', on);
+    box.setAttribute('aria-checked', String(on));
+  });
   updateSel();
 }
 
 async function loadRows(quiet, selectOpen = false) {
   if (S.loading || S.running || S.projectPending || !S.state?.project_id) return;
   S.loading = true;
+  resetSelectionAnchor();
   projectControls();
   $("#btnReload").disabled = true;
   $("#selText").textContent = "Lade Sheet…";
@@ -474,9 +509,16 @@ async function boot() {
   $("#btnReload").onclick = () => loadRows(false);
   $("#tbody").onclick = (e) => {
     const row = e.target.closest(".trow");
-    if (row) toggleRow(parseInt(row.dataset.row, 10));
+    if (row) selectRow(Number(row.dataset.row), e, !!e.target.closest('.box'));
+  };
+  $("#tbody").onkeydown = (e) => {
+    if (!e.target.closest('.box') || ![' ', 'Enter'].includes(e.key)) return;
+    e.preventDefault();
+    selectRow(Number(e.target.closest('.trow').dataset.row), e, true);
   };
   $$(".pill").forEach(b => b.onclick = () => {
+    if (selectionBlocked()) return;
+    resetSelectionAnchor();
     const k = b.dataset.sel;
     if (k === "all") S.sel = new Set(S.rows.map(r => r.row));
     else if (k === "none") S.sel = new Set();

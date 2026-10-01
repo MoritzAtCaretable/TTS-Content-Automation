@@ -107,6 +107,7 @@ a:hover{color:var(--green-deep)}
 .modelrow .field{flex:1 1 220px;min-width:0}
 
 /* ---------- Sheet-Tabelle ---------- */
+.selection-help{margin-top:12px}
 .tablebox{margin-top:14px;border-radius:12px;background:var(--inset);overflow:hidden}
 .grid{display:grid;grid-template-columns:52px 72px 200px 1fr 130px 170px;align-items:center;padding:0 8px}
 .thead{height:42px;font-family:var(--ct_font_medium);font-size:13px;color:var(--tx2);border-bottom:1px solid #DDE5EA}
@@ -114,6 +115,8 @@ a:hover{color:var(--green-deep)}
 .trow{height:44px;font-size:14.5px;border-bottom:1px solid var(--line);cursor:pointer}
 .trow:last-child{border-bottom:0}
 .trow:hover{background:var(--ct_E1)}
+.trow.selected{background:#e7f3f1}
+.trow.selected:hover{background:#d7eeeb}
 .trow .num{color:var(--tx3)}
 .trow .rid{font-family:var(--mono);font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:10px}
 .trow .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:10px}
@@ -123,6 +126,7 @@ a:hover{color:var(--green-deep)}
 .box.on{background:var(--green);border-color:var(--green)}
 .box svg{opacity:0}
 .box.on svg{opacity:1}
+.box:focus-visible{outline:2px solid var(--ct_A2);outline-offset:3px}
 .st{display:flex;align-items:center;gap:8px;font-family:var(--ct_font_medium)}
 .st .d{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
 .st.passed{color:var(--ct_correct)}
