@@ -23,10 +23,11 @@ function audioURL(entry, source = 'current') {
   return `audio/${encodeURIComponent(entry.key)}?version=${encodeURIComponent(entry.version)}&source=${source}`;
 }
 function controls() {
-  document.querySelectorAll('[data-action], [data-status], .editor input, .editor select, [data-preview]').forEach(node => {
+  document.querySelectorAll('[data-action], [data-status], .editor input, .editor select, .model-select, [data-preview]').forEach(node => {
     node.disabled = busy || pending;
   });
   $('#job').textContent = busy || pending ? 'Vorgang läuft…' : 'Bereit';
+  StudioSelects.sync();
 }
 function statusSelect(entry) {
   const selected = statuses.includes(entry.status) ? entry.status : 'review needed';
@@ -56,7 +57,7 @@ function render() {
     <div class="card-head"><div class="identity">${esc(entry.id)}</div><span class="badge ${entry.status === 'passed' ? 'passed' : entry.status === 'regenerate' ? 'regenerate' : ''}">${statusLabel(entry.status)}</span></div>
     <div class="text">${esc(entry.text)}</div>
     <div class="meta" title="${esc(entry.filename)}">${esc(entry.filename)}</div>
-    <div class="muted">Stimme: ${esc(entry.voice_name || entry.voice_id || 'Bisherige Stimme (Altbestand)')}</div>
+    <div class="muted">Stimme: ${esc(entry.voice_name || entry.voice_id || 'Stimme unbekannt')}</div>
     <div class="card-bottom">${player(entry)}${syncWarning(entry)}<div class="card-actions">${statusSelect(entry)}<button data-open aria-label="${esc(entry.id)} vergrößert bearbeiten">Bearbeiten ↗</button></div></div>
   </article>`).join('') || '<div class="empty">Keine passenden Audios vorhanden.</div>';
   document.querySelectorAll('.card').forEach(card => {
@@ -82,14 +83,14 @@ function renderDetail(entry) {
   editors.clear();
   selectedVersion = entry.version;
   const root = $('#detail-content');
-  root.innerHTML = `<div class="detail-top"><div><h2 id="detail-title">${esc(entry.id)}</h2><div class="muted">${esc(entry.filename)} · ${esc(entry.model || 'Modell unbekannt')}<br>Stimme: ${esc(entry.voice_name || entry.voice_id || 'Bisherige Stimme (Altbestand)')}</div></div>${statusSelect(entry)}</div>
+  root.innerHTML = `<div class="detail-top"><div><h2 id="detail-title">${esc(entry.id)}</h2><div class="muted">${esc(entry.filename)} · ${esc(entry.model || 'Modell unbekannt')}<br>Stimme: ${esc(entry.voice_name || entry.voice_id || 'Stimme unbekannt')}</div></div>${statusSelect(entry)}</div>
     <div class="text">${esc(entry.text)}</div><div class="reason">${esc(entry.reason)}</div>${player(entry)}${syncWarning(entry)}
     ${entry.has_audio || entry.has_original ? `<section class="editor"><h3>Audio schneiden</h3><p>Grenzen in der Wellenform ziehen oder Zeiten einstellen. Der ausgewählte Bereich wird behalten; nach dem Speichern ist eine erneute Freigabe nötig.</p>
-      <label>Audioquelle<select class="source">${entry.has_audio ? '<option value="current">Aktuelle Version</option>' : ''}${entry.has_original ? '<option value="original">Ungeschnittenes Original</option>' : ''}</select></label>
+      <label>Audioquelle<select class="source" aria-label="Audioquelle">${entry.has_audio ? '<option value="current">Aktuelle Version</option>' : ''}${entry.has_original ? '<option value="original">Ungeschnittenes Original</option>' : ''}</select></label>
       <canvas aria-label="Wellenform mit ziehbaren Schnittgrenzen"></canvas><div class="wave-status">Wellenform wird geladen…</div>
       <div class="ranges"><label>Start (Sekunden)<input class="start" type="number" min="0" step="0.001" value="0"><input class="start-range" aria-label="Schnittstart" type="range" min="0" step="0.001" value="0"></label><label>Ende (Sekunden)<input class="end" type="number" min="0" step="0.001" value="0"><input class="end-range" aria-label="Schnittende" type="range" min="0" step="0.001" value="0"></label></div>
       <div class="actions"><button data-preview>Auswahl vorhören</button><button class="primary" data-action="trim">Schnitt speichern</button></div></section>` : ''}
-    <div class="actions">${entry.has_audio ? '<button data-action="recheck">Erneut automatisch prüfen</button>' : ''}<label>Stimmmodell<select class="model-select">${models.map(model => `<option ${model === entry.model ? 'selected' : ''}>${esc(model)}</option>`).join('')}</select></label><button data-action="regenerate">Jetzt neu generieren…</button></div>${qcDetails(entry)}`;
+    <div class="actions">${entry.has_audio ? '<button data-action="recheck">Erneut automatisch prüfen</button>' : ''}<label>Stimmmodell<select class="model-select" aria-label="Modell für diese Neugenerierung">${models.map(model => `<option ${model === entry.model ? 'selected' : ''}>${esc(model)}</option>`).join('')}</select></label><button data-action="regenerate">Jetzt neu generieren…</button></div>${qcDetails(entry)}`;
   bindActions(root, entry);
   if ($('.editor', root)) {
     const editor = new Editor(entry, root);
@@ -114,6 +115,7 @@ $('#detail').addEventListener('click', event => {
   }
 });
 $('#detail').addEventListener('close', () => {
+  StudioSelects.close();
   for (const editor of editors.values()) editor.close();
   editors.clear();
   $('#detail-content').querySelectorAll('audio').forEach(audio => audio.pause());

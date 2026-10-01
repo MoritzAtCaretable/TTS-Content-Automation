@@ -54,6 +54,7 @@ from tts_quality import (
 )
 from tts_identity import resolve_record, parse_sheet_values
 from tts_audio import AudioProcessingError, trim_aligned_word, export_audio, safe_filename, silence_threshold
+from tts_voices import DEFAULT_VOICE_NAME
 
 # .env laden (falls python-dotenv installiert ist). Ohne .env greift os.getenv auf
 # echte Umgebungsvariablen zurück – der Rest funktioniert weiterhin.
@@ -100,7 +101,7 @@ if _env_rows:
 # ElevenLabs — Keys/Voice kommen aus der .env (siehe .env.example)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "iMHt6G42evkXunaDU065")
-VOICE_NAME = os.getenv("TTS_VOICE_NAME", "Bisherige Stimme")
+VOICE_NAME = os.getenv("TTS_VOICE_NAME", DEFAULT_VOICE_NAME)
 # Modell per Umgebungsvariable überschreibbar (wird von der GUI-App gesetzt)
 ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
 ELEVENLABS_LANGUAGE_CODE = "de"   # Erzwingt die Sprache (ISO 639-1). None = automatisch.

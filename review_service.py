@@ -64,10 +64,17 @@ class ReviewService:
     def public_entries(self):
         result = []
         for key, entry in self.load_entries().items():
+            voice_name = entry.get("voice_name")
+            if not voice_name or voice_name == "Bisherige Stimme":
+                try:
+                    voice_id = entry.get("voice_id") or self.api.voices.data["legacy_voice_id"]
+                    voice_name = self.api.voices.get(voice_id)["name"]
+                except ValueError:
+                    voice_name = entry.get("voice_id") or "Stimme unbekannt"
             result.append({"key": key, "version": self.version(entry), **{
                 k: entry.get(k) for k in ("id", "text", "filename", "mode", "status", "reason",
                                          "generated_at", "transcript", "wer", "gemini", "model", "qc",
-                                         "sync_error", "decision", "voice_id", "voice_name")},
+                                         "sync_error", "decision", "voice_id")}, "voice_name": voice_name,
                 "has_audio": bool(entry.get("abspath") and Path(entry["abspath"]).is_file()),
                 "has_original": bool(entry.get("raw_abspath") and Path(entry["raw_abspath"]).is_file())})
         return sorted(result, key=lambda e: e.get("generated_at") or "", reverse=True)
@@ -335,7 +342,8 @@ class ReviewServer:
                     if route.startswith("audio/"):
                         entry = owner.service.entry(route[6:], query.get("version", [None])[0])
                         return self.file_response(owner.service.audio_path(entry, query.get("source", ["current"])[0]), audio=True)
-                    assets = {"": "review.html", "review.js": "review.js", "review.css": "review.css"}
+                    assets = {"": "review.html", "review.js": "review.js", "review.css": "review.css",
+                              "select.js": "select.js", "select.css": "select.css"}
                     for asset in ("assets/brand/app-icon.png", "assets/fonts/CardiumARegular.woff2",
                                   "assets/fonts/CardiumAMedium.woff2", "assets/fonts/CardiumABold.woff2"):
                         assets[asset] = asset

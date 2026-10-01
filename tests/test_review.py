@@ -151,6 +151,8 @@ class ReviewTests(unittest.TestCase):
         base=parsed.path
         self.assertEqual(request(base)[0],200)
         self.assertEqual(request(base+'review.js')[0],200)
+        self.assertEqual(request(base+'select.js')[0],200)
+        self.assertEqual(request(base+'select.css')[0],200)
         self.assertEqual(request('/api/entries')[0],400)
         self.assertEqual(request(base+'../.env')[0],400)
         self.assertEqual(request(base+'audio/test',headers={'Range':'bytes=0-3'}),(206,b'RIFF'))

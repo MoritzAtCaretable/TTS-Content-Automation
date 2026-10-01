@@ -99,6 +99,9 @@ class Api:
         self.projects = []
         self.project = None
         self.project_store = ProjectStore(project_config_path or self.root / ".tts_projects.json", pipeline.SPREADSHEET_ID)
+        saved_model = self.project_store.model(self.model)
+        if saved_model in VOICE_MODELS:
+            self.model = saved_model
         self._project_voice = None
 
     # ---------------------------------------------------------------- Zustand
@@ -124,9 +127,11 @@ class Api:
         if project_id is not None:
             self._require_project(project_id)
         if model in VOICE_MODELS:
-            self._remember_project({"model": model})
+            self.project_store.set_model(model)
             self.model = model
-        return {}
+        else:
+            raise ValueError("Unbekanntes TTS-Modell")
+        return {"model": self.model}
 
     @_guard
     def set_voice(self, voice_id: str, project_id=None) -> dict:
@@ -187,12 +192,9 @@ class Api:
         voice_id = prefs.get("voice_id") or self.voices.state()["voice_id"]
         if voice_id and not any(v["id"] == voice_id for v in self.voices.state()["voices"]):
             voice_id = self.voices.state()["voice_id"]
-        model = prefs.get("model", pipeline.ELEVENLABS_MODEL)
-        if model not in VOICE_MODELS:
-            model = VOICE_MODELS[0]
         self.project_store.save_project(context["id"], {"name": context["name"], "folder": context["folder"],
-            "voice_id": voice_id, "model": model}, select=True, legacy_id=legacy_id or None)
-        self.project, self.folder, self.model, self._project_voice = context, context["folder"], model, voice_id
+            "voice_id": voice_id}, select=True, legacy_id=legacy_id or None, model=self.model)
+        self.project, self.folder, self._project_voice = context, context["folder"], voice_id
         self.rows, self.rows_loaded = [], False
 
     @_guard

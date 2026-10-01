@@ -11,6 +11,8 @@ import threading
 
 import requests
 
+DEFAULT_VOICE_NAME = "Stefan Rank - Der Erzähler"
+
 
 def validate_voice_id(value):
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value.strip()):
@@ -71,8 +73,15 @@ class VoiceStore:
             except ValueError:
                 default_id = ""
             data = {"version": 1, "selected": default_id, "legacy_voice_id": default_id,
-                    "voices": [{"id": default_id, "name": "Bisherige Stimme"}] if default_id else []}
+                    "voices": [{"id": default_id, "name": DEFAULT_VOICE_NAME}] if default_id else []}
         self.data = data
+        # Upgrade the old placeholder only; keep user-defined names and selection.
+        renamed = copy.deepcopy(data)
+        for voice in renamed["voices"]:
+            if voice["id"] == renamed.get("legacy_voice_id", default_id) and voice["name"] == "Bisherige Stimme":
+                voice["name"] = DEFAULT_VOICE_NAME
+        if renamed != data:
+            self.save(renamed)
 
     def state(self):
         with self.lock:

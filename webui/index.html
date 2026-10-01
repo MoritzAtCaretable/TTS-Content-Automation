@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TTS Studio</title>
 <link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="select.css">
 </head>
 <body>
 <div class="shell">
@@ -34,7 +35,7 @@
 
     <div class="card project-card">
       <div><h2>Projekt</h2><div class="hint">Ein Projekt = ein Tabellenblatt</div></div>
-      <label class="field project-field"><div style="flex:1;min-width:0"><div class="cap">Aktuelles Projekt</div><select id="project" aria-label="Aktuelles Projekt"><option value="">Projekte werden geladen…</option></select></div><span aria-hidden="true">⌄</span></label>
+      <div class="field project-field" data-select-field><select id="project" aria-label="Aktuelles Projekt" data-caption="Aktuelles Projekt"><option value="">Projekte werden geladen…</option></select></div>
       <button class="btn turq voice-add" id="btnAddProject" title="Projekt erstellen" aria-label="Projekt erstellen">+</button>
       <button class="btn quiet" id="btnReloadProjects">Projekte laden</button>
     </div>
@@ -45,18 +46,12 @@
         <h2>ElevenLabs</h2>
         <div class="hint">Stimme und Modell für den Lauf</div>
         <div class="voicerow">
-          <label class="field"><div style="flex:1;min-width:0"><div class="cap">Stimme</div><select id="voice" aria-label="Stimme für die Generierung"></select></div><span aria-hidden="true">⌄</span></label>
+          <div class="field" data-select-field><select id="voice" aria-label="Stimme für die Generierung" data-caption="Stimme"></select></div>
           <button class="btn turq voice-add" id="btnAddVoice" aria-label="Stimme hinzufügen" title="Stimme hinzufügen">+</button>
         </div>
         <div class="modelrow">
           <div class="mlbl">TTS-Modell</div>
-          <label class="field click">
-            <div style="flex:1;min-width:0">
-              <div class="cap">Modell</div>
-              <select id="model"></select>
-            </div>
-            <svg viewBox="0 0 52.475 30" width="17" height="10" fill="var(--ct_A2)" style="flex:none"><path d="M20.956,26.231,1.1,6.391A3.75,3.75,0,0,1,6.413,1.1l22.5,22.48a3.743,3.743,0,0,1,.109,5.171L6.428,51.382a3.75,3.75,0,0,1-5.311-5.3Z" transform="translate(52.475 0) rotate(90)"></path></svg>
-          </label>
+          <div class="field" data-select-field><select id="model" aria-label="TTS-Modell" data-caption="Modell für alle Projekte"></select></div>
         </div>
       </div>
 
@@ -119,16 +114,11 @@
             <div class="cap">ID-Präfix</div>
             <input id="prefix" type="text" placeholder="z.B. Buchstaben" spellcheck="false">
           </label>
-          <label class="stack" style="flex:none;width:210px;display:flex;align-items:center;gap:10px;cursor:pointer">
-            <div style="flex:1">
-              <div class="cap">Modus</div>
-              <select id="newMode">
-                <option>Einzelwort</option>
-                <option>Normal</option>
-              </select>
-            </div>
-            <svg viewBox="0 0 52.475 30" width="16" height="9" fill="var(--ct_A2)" style="flex:none"><path d="M20.956,26.231,1.1,6.391A3.75,3.75,0,0,1,6.413,1.1l22.5,22.48a3.743,3.743,0,0,1,.109,5.171L6.428,51.382a3.75,3.75,0,0,1-5.311-5.3Z" transform="translate(52.475 0) rotate(90)"></path></svg>
-          </label>
+          <div class="stack" style="flex:none;width:210px" data-select-field>
+            <select id="newMode" aria-label="Modus für neue Texte" data-caption="Modus">
+              <option>Einzelwort</option><option>Normal</option>
+            </select>
+          </div>
         </div>
 
         <textarea id="newText" spellcheck="false" placeholder="Wäsche&#10;Handtuch&#10;eigene_id | Wohin gehört das Handtuch?"></textarea>
@@ -217,6 +207,7 @@
     <div class="acts"><button class="btn quiet" type="button" id="cancelVoice">Abbrechen</button><button class="btn turq" type="submit" id="saveVoice">Hinzufügen</button></div>
   </form>
 </dialog>
+<script src="select.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

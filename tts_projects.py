@@ -83,6 +83,8 @@ class ProjectStore:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
                 if data.get("version") != 1 or not isinstance(data.get("books"), dict):
                     raise ValueError("Ungültiges Projektformat")
+                if "model" in data and not isinstance(data["model"], str):
+                    raise ValueError("Ungültige Modellauswahl")
                 for book in data["books"].values():
                     if not isinstance(book, dict) or not isinstance(book.get("projects", {}), dict):
                         raise ValueError("Ungültige Projektliste")
@@ -96,7 +98,19 @@ class ProjectStore:
     def book(self):
         return copy.deepcopy(self.data["books"].get(self.spreadsheet_id, {"projects": {}}))
 
-    def save_project(self, project_id, preferences, *, select=False, legacy_id=None):
+    def model(self, default):
+        # On upgrade, retain the last selected project's model as the shared one.
+        book = self.book()
+        previous = book.get("projects", {}).get(book.get("selected"), {}).get("model")
+        return self.data.get("model") or previous or default
+
+    def set_model(self, model):
+        data = copy.deepcopy(self.data)
+        data["model"] = model
+        write_json(self.path, data)
+        self.data = data
+
+    def save_project(self, project_id, preferences, *, select=False, legacy_id=None, model=None):
         data = copy.deepcopy(self.data)
         book = data["books"].setdefault(self.spreadsheet_id, {"projects": {}})
         book["projects"].setdefault(str(project_id), {}).update(preferences)
@@ -104,6 +118,12 @@ class ProjectStore:
             book["selected"] = str(project_id)
         if legacy_id is not None and "legacy_id" not in book:
             book["legacy_id"] = str(legacy_id)
+        if model is not None:
+            data["model"] = model
+            # Old project overrides must never reappear after a project switch.
+            for saved_book in data["books"].values():
+                for prefs in saved_book.get("projects", {}).values():
+                    prefs.pop("model", None)
         write_json(self.path, data)
         self.data = data
 

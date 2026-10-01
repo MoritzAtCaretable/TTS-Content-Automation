@@ -53,6 +53,7 @@ class ProjectTests(unittest.TestCase):
         self.api.set_voice('otherVoice', '0')
         self.api.set_model('eleven_v3', '0')
         self.select(22)
+        self.assertEqual(self.api.model, 'eleven_v3')
         self.assertNotEqual(self.api.folder, original_folder)
         self.assertEqual(self.api.project['review_data'].split('/')[-2], '22')
         self.select(0)
@@ -64,6 +65,28 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(result['folder'], original_folder)
         self.assertEqual(result['voice_id'], 'otherVoice')
         self.assertEqual(result['model'], 'eleven_v3')
+
+    def test_global_model_migrates_from_last_project_and_ignores_old_overrides(self):
+        self.api.project_store.save_project('0', {'name':'Bestand','model':'eleven_flash_v2_5'}, select=True)
+        self.api.project_store.save_project('22', {'name':'Training','model':'eleven_v3'})
+        self.api = self.new_api()
+        self.assertEqual(self.api.model, 'eleven_flash_v2_5')
+        self.select(22)
+        self.assertEqual(self.api.model, 'eleven_flash_v2_5')
+        self.assertTrue(self.api.set_model('eleven_multilingual_v2', '22')['ok'])
+        self.select(0)
+        self.assertEqual(self.api.model, 'eleven_multilingual_v2')
+        self.assertEqual(self.new_api().model, 'eleven_multilingual_v2')
+        self.assertEqual(self.api.project_store.data['model'], 'eleven_multilingual_v2')
+        self.assertTrue(all('model' not in p for p in self.api.project_store.book()['projects'].values()))
+
+    def test_failed_global_model_save_keeps_previous_selection(self):
+        self.select(0)
+        before = self.api.model
+        with patch('tts_projects.os.replace', side_effect=OSError('disk full')):
+            self.assertFalse(self.api.set_model('eleven_v3')['ok'])
+        self.assertEqual(self.api.model, before)
+        self.assertEqual(self.new_api().model, before)
 
     def test_empty_new_project_accepts_first_automatic_ids_and_scopes_appends(self):
         def batch(body):

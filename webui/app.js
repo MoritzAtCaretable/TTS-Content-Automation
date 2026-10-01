@@ -15,6 +15,7 @@ const S = {
   lastJob: "",
   voicePending: false,
   projectPending: false,
+  modelPending: false,
   drafts: {},
 };
 
@@ -78,9 +79,18 @@ function renderVoices(data) {
   voiceControls();
 }
 function voiceControls() {
-  $("#voice").disabled = S.running || S.voicePending || S.projectPending;
-  $("#btnAddVoice").disabled = S.running || S.voicePending || S.projectPending;
+  $("#voice").disabled = S.running || S.voicePending || S.projectPending || S.modelPending;
+  $("#btnAddVoice").disabled = S.running || S.voicePending || S.projectPending || S.modelPending;
   projectControls();
+}
+async function changeModel() {
+  S.modelPending = true;
+  voiceControls();
+  const result = await api('set_model', $('#model').value, S.state?.project_id);
+  if (result) S.state.model = result.model;
+  else $('#model').value = S.state.model;
+  S.modelPending = false;
+  voiceControls();
 }
 async function changeVoice() {
   S.voicePending = true;
@@ -124,7 +134,7 @@ async function saveVoice(event) {
 
 /* ---------- Projekte ---------- */
 function projectControls() {
-  const blocked = S.running || S.projectPending || S.loading || S.adding || S.voicePending;
+  const blocked = S.running || S.projectPending || S.loading || S.adding || S.voicePending || S.modelPending;
   for (const id of ['project', 'btnAddProject', 'btnReloadProjects']) $("#" + id).disabled = blocked;
   for (const id of ['btnSheet', 'btnReview', 'btnResetReview', 'model', 'btnFolder', 'btnReload', 'btnAdd']) {
     $("#" + id).disabled = blocked || !S.state?.project_id;
@@ -132,6 +142,7 @@ function projectControls() {
   for (const id of ['prefix', 'newMode', 'newText']) $("#" + id).disabled = blocked || !S.state?.project_id;
   $('#btnAdd').disabled = blocked || !S.state?.project_id || !S.loaded;
   updateSel();
+  StudioSelects.sync();
 }
 function applyProject(data) {
   const oldId = S.state?.project_id;
@@ -249,7 +260,7 @@ function updateSel() {
     $("#scope").textContent = total
       ? `${n} ausgewählt — verarbeitet wird genau diese Auswahl`
       : "";
-    $("#btnStart").disabled = S.loading || S.adding || S.voicePending || S.projectPending || !S.state?.project_id || !S.state?.voice_id || !S.loaded || n === 0;
+    $("#btnStart").disabled = S.loading || S.adding || S.voicePending || S.modelPending || S.projectPending || !S.state?.project_id || !S.state?.voice_id || !S.loaded || n === 0;
   }
 }
 
@@ -326,7 +337,7 @@ async function addRows() {
 
 /* ---------- Lauf ---------- */
 async function start() {
-  if (S.running || S.loading || S.adding || S.voicePending || S.projectPending || !S.state?.project_id || !S.state?.voice_id || !S.loaded) return;
+  if (S.running || S.loading || S.adding || S.voicePending || S.modelPending || S.projectPending || !S.state?.project_id || !S.state?.voice_id || !S.loaded) return;
   const rows = Array.from(S.sel).sort((a, b) => a - b);
   const allOpen = !S.loaded || !S.rows.length;     // Tabelle leer → Status-Filter
   if (!rows.length && !allOpen) {
@@ -455,7 +466,7 @@ async function boot() {
   $("#voiceForm").onsubmit = saveVoice;
   $("#cancelVoice").onclick = () => $("#voiceDialog").close();
   $("#voiceDialog").addEventListener("cancel", event => { if (S.voicePending) event.preventDefault(); });
-  $("#model").onchange = () => api("set_model", $("#model").value, S.state?.project_id);
+  $("#model").onchange = changeModel;
   $("#btnFolder").onclick = async () => {
     const r = await api("choose_folder", S.state?.project_id);
     if (r && r.path) { $("#folder").textContent = r.path; $("#folder").title = r.path; }

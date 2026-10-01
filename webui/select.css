@@ -1,0 +1,26 @@
+/* Shared Caretable selection menus for the app and its review page. */
+.studio-select-host{display:block;min-width:0;position:relative}
+.studio-select-host.field,.studio-select-host.stack{padding:0}
+.studio-select-host select[hidden]{display:none!important}
+.studio-select-trigger{display:flex;align-items:center;gap:12px;width:100%;min-width:0;min-height:44px;
+  padding:10px 12px;margin:0;border:1px solid #dde5ea;border-radius:10px;background:#fff;color:#000f28;
+  font:inherit;text-align:left;cursor:pointer;box-shadow:none;white-space:normal;transition:background .15s,border-color .15s}
+.field>.studio-select-trigger,.stack>.studio-select-trigger{height:100%;min-height:52px;padding:8px 16px;background:var(--inset,#ecf1f4);border:1px solid transparent}
+.studio-select-trigger:hover:not(:disabled){background:#e3efef;border-color:#9fbfc3}
+.studio-select-trigger:focus-visible,.studio-select-trigger[aria-expanded=true]{outline:2px solid #64b4b4;outline-offset:2px}
+.studio-select-trigger:disabled{opacity:.5;cursor:default}
+.studio-select-text{flex:1;min-width:0}
+.studio-select-caption{display:block;font-size:12.5px;line-height:1.3;color:#7a818e;margin-bottom:2px}
+.studio-select-value{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--ct_font_medium,inherit)}
+.studio-select-arrow{width:20px;height:20px;flex:none;fill:none;stroke:#116378;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;transition:transform .15s}
+.studio-select-trigger[aria-expanded=true] .studio-select-arrow{transform:rotate(180deg)}
+.studio-select-menu{position:fixed;z-index:10000;box-sizing:border-box;padding:6px;overflow:auto;overscroll-behavior:contain;
+  border:1px solid #d6e3e8;border-radius:12px;background:#fff;color:#000f28;box-shadow:0 10px 30px #000f282b;
+  font-family:inherit;font-size:15px;line-height:1.4;scrollbar-width:thin;scrollbar-color:#9fbdc7 transparent}
+.studio-select-option{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:42px;padding:10px 12px;
+  border-radius:7px;cursor:pointer;overflow-wrap:anywhere}
+.studio-select-option[aria-selected=true]{color:#0c5f5c;background:#e7f3f1;font-weight:600}
+.studio-select-option.active{background:#d7eeeb;box-shadow:inset 0 0 0 1px #91c8c2}
+.studio-select-option[aria-disabled=true]{opacity:.45;cursor:default}
+.studio-select-check{flex:none;width:18px;text-align:center;color:#117875}
+.studio-select-sr{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}

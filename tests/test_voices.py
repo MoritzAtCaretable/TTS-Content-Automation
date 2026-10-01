@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 import requests
 import sheets_to_elevenlabs_qc_local as pipeline
 from review_service import ReviewService
-from tts_voices import VoiceStore, fetch_voice, validate_voice_id
+from tts_voices import DEFAULT_VOICE_NAME, VoiceStore, fetch_voice, validate_voice_id
 from webui_api import Api
 
 
@@ -26,6 +26,7 @@ class VoiceTests(unittest.TestCase):
 
     def test_existing_voice_import_and_restart(self):
         self.assertEqual(self.api.get_state()['voice_id'], self.default)
+        self.assertEqual(self.api.voices.get()['name'], DEFAULT_VOICE_NAME)
         self.assertFalse(self.path.exists())
         self.api.voices.add({'id': self.second, 'name': 'Anna'})
         restarted = Api(voice_config_path=self.path)
@@ -112,6 +113,28 @@ class VoiceTests(unittest.TestCase):
         self.path.write_text('{broken')
         with self.assertRaisesRegex(ValueError, 'unverändert'): VoiceStore(self.path, self.default)
         self.assertEqual(self.path.read_text(), '{broken')
+
+    def test_placeholder_migration_preserves_other_names_and_selection(self):
+        data = {'version':1, 'selected':self.second, 'legacy_voice_id':self.default,
+                'voices':[{'id':self.default,'name':'Bisherige Stimme'}, {'id':self.second,'name':'Anna'}]}
+        self.path.write_text(json.dumps(data))
+        store = VoiceStore(self.path, self.default)
+        self.assertEqual(store.get(self.default)['name'], DEFAULT_VOICE_NAME)
+        self.assertEqual(store.get()['id'], self.second)
+        self.assertEqual(store.get()['name'], 'Anna')
+        saved = json.loads(self.path.read_text())
+        self.assertEqual(saved['voices'][0]['name'], DEFAULT_VOICE_NAME)
+        saved['voices'][0]['name'] = 'Mein eigener Name'
+        self.path.write_text(json.dumps(saved))
+        self.assertEqual(VoiceStore(self.path, self.default).get(self.default)['name'], 'Mein eigener Name')
+
+    def test_legacy_review_label_is_updated_without_rewriting_history(self):
+        with patch.object(pipeline, 'REVIEW_DATA_FILE', str(Path(self.tmp.name)/'review.json')):
+            pipeline._save_review_entry({'id':'old','voice_id':self.default,'voice_name':'Bisherige Stimme'}, key='old')
+            before = pipeline._load_review_data()
+            entry = ReviewService(self.api, pipeline).public_entries()[0]
+            self.assertEqual(entry['voice_name'], DEFAULT_VOICE_NAME)
+            self.assertEqual(pipeline._load_review_data(), before)
 
 
 class VoiceLookupTests(unittest.TestCase):

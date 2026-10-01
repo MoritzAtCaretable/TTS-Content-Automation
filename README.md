@@ -321,7 +321,9 @@ bleibt die bisherige Konfiguration erhalten. Stimmen aus einer geteilten Bibliot
 müssen gegebenenfalls zuerst im ElevenLabs-Konto hinzugefügt werden.
 
 Die bisherige `ELEVENLABS_VOICE_ID` aus `.env` erscheint automatisch als
-**Bisherige Stimme**. Die lokale Datei `.tts_voices.json` speichert die Stimmenliste
+**Stefan Rank - Der Erzähler**. Der frühere Platzhaltername **Bisherige Stimme**
+wird automatisch aktualisiert; selbst vergebene Namen bleiben erhalten.
+Die lokale Datei `.tts_voices.json` speichert die Stimmenliste
 und die letzte Auswahl auch über App-Neustarts hinweg. Sie enthält keine API-Keys
 und wird nicht mit Git synchronisiert. Dieselbe ID wird nur einmal angelegt; über
 **+** mit derselben ID und einem Anzeigenamen kann sie umbenannt werden.
@@ -356,8 +358,11 @@ Service-Account benötigt weiterhin Bearbeitungsrechte am Spreadsheet.
 Jedes Projekt erhält einen eigenen Audio-Unterordner, beispielsweise
 `tts-output/Gedächtnistraining--123456/`. Alle Stimmen dieses Projekts liegen darin
 zusammen. **Ablage ändern…** wählt einen neuen Basisordner, unter dem der
-Projekt-Unterordner liegt. Ordner, Stimme und Modell werden je Projekt lokal
-gespeichert. Die feste Tabellenblatt-ID hält die Zuordnung auch nach einer
+Projekt-Unterordner liegt. Ordner und Stimme werden je Projekt lokal
+gespeichert. Das **TTS-Modell gilt für alle Projekte** dieser App-Installation
+und bleibt auch nach einem Neustart ausgewählt. Beim Umstieg wird die bisherige
+Modellwahl des zuletzt ausgewählten Projekts übernommen.
+Die feste Tabellenblatt-ID hält die Zuordnung auch nach einer
 Umbenennung stabil; ein bereits eingerichteter Ausgabeordner bleibt dabei gleich.
 
 Die Zeilenauswahl wird beim Projektwechsel geleert und anschließend aus dem neuen
@@ -366,6 +371,12 @@ beim jeweiligen Projekt erhalten. Während einer Generierung oder Review-Aktion
 ist der Projektwechsel gesperrt. Bereits geöffnete Prüfseiten bleiben an ihr
 ursprüngliches Projekt gebunden. **Review zurücksetzen** betrifft nur das aktuell
 ausgewählte Projekt und löscht keine Audiodateien.
+
+Die Auswahlmenüs in App und Prüfseite verwenden denselben Stil wie die übrige
+Oberfläche, auch bei dynamisch geladenen Projekten und Stimmen. Das gesamte Feld
+einschließlich Pfeil öffnet die Auswahl. Mit den Pfeiltasten oder durch Eingabe
+der Anfangsbuchstaben navigieren, mit **Enter** bestätigen und mit **Escape**
+ohne Änderung schließen.
 
 Die Einstellungen stehen in `.tts_projects.json`, die getrennten Prüfstände unter
 `.tts-projects/`; beides bleibt lokal und ist von Git ausgeschlossen. Beim ersten
