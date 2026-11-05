@@ -196,6 +196,14 @@ a:hover{color:var(--green-deep)}
 .sheet .pre{margin-top:12px;padding:12px 14px;border-radius:10px;background:var(--inset);
      font-family:var(--mono);font-size:13px;line-height:1.7;max-height:260px;overflow:auto;white-space:pre}
 .sheet .acts{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
+.sheet .opt{display:flex;align-items:center;gap:10px;margin-top:14px;cursor:pointer;
+     font-size:14.5px;color:var(--tx)}
+.sheet .opt input{width:18px;height:18px;accent-color:var(--green);cursor:pointer;margin:0}
+.sheet .opt.gap{padding-left:28px;gap:12px;cursor:default}
+.sheet .opt.gap .lbl{color:var(--tx2);font-size:14px}
+.sheet .opt.gap input[type=range]{width:200px;height:4px;accent-color:var(--green)}
+.sheet .opt.gap .val{font-family:var(--mono);font-size:13.5px;min-width:52px}
+.sheet .cnt{margin-top:8px;font-size:13px;color:var(--tx2)}
 
 /* Gespeicherte ElevenLabs-Stimmen */
 .voicerow{display:flex;align-items:center;gap:12px;margin-top:16px}

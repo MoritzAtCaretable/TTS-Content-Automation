@@ -129,6 +129,37 @@ Die Karte **Neue Texte** hängt neue Zeilen unten ans Sheet an — ohne das Shee
   Schlüssel eines Eintrags.
 - Danach lädt die Tabelle neu; die neuen Zeilen sind `todo` und damit gleich angehakt.
 
+#### Aus Audio transkribieren
+
+Der Knopf **Aus Audio** erzeugt die Sprechzeilen aus vorhandenen Aufnahmen,
+statt sie zu tippen:
+
+1. Audiodateien auswählen (Mehrfachauswahl; `wav, mp3, m4a, opus, ogg, flac,
+   aac, mp4, webm, mov, aiff`).
+2. Whisper transkribiert sie — mit Fortschritt im Protokoll, jederzeit
+   abbrechbar über den Stopp-Knopf.
+3. Ein Dialog zeigt das Ergebnis mit zwei Einstellungen:
+   - **Bei Sprechpausen trennen** (standardmäßig an): Eine Aufnahme mit mehreren
+     Phrasen wird in einzelne Sprechzeilen geschnitten — der Regler bestimmt, ab
+     welcher Pausenlänge geschnitten wird (Standard 0,5 s). Die Vorschau rechnet
+     sofort mit, ohne neu zu transkribieren. Aus: eine Zeile je Datei.
+   - **Dateinamen als ID übernehmen** (standardmäßig an): aus `Wäsche waschen 01.wav`
+     wird `Waesche_waschen_01 | Wäsche waschen`. Zerfällt eine Datei in mehrere
+     Zeilen, werden die IDs durchnumeriert (`_01`, `_02`, …). Ohne die Option
+     bleibt nur der Text, und die IDs kommen aus dem ID-Präfix.
+4. **Übernehmen** hängt die Zeilen unten ans Feld **Neue Texte** an — bestehender
+   Inhalt bleibt erhalten. Geschrieben wird erst mit **Ins Sheet einfügen**, so
+   lässt sich vorher noch korrigieren.
+
+Es gilt dasselbe Whisper-Modell wie in der Qualitätskontrolle (`WHISPER_MODEL`,
+Standard `medium`); über die Umgebungsvariable `TTS_WHISPER_MODEL` lässt sich für
+die Transkription ein anderes wählen.
+
+> Zur Pausenerkennung: Whisper-Wortzeiten reichen dafür nicht — die Endzeiten
+> laufen in die Stille hinein und machen Pausen künstlich kurz (ein 0,70 s langes
+> „Banane“ endet laut Whisper erst bei 1,26 s). Die Pausen werden deshalb direkt
+> im Audio gemessen (Sprechbereiche per pydub) und den Wörtern zugeordnet.
+
 ---
 
 ## Bedienung des Sheets
@@ -271,6 +302,7 @@ ausführen (`./install.sh` bzw. `install.bat`).
 | `tts_studio_web.py` | Startet das App-Fenster | beide |
 | `webui_api.py` | Brücke Oberfläche ↔ Fachlogik | beide |
 | `webui/` | Oberfläche (HTML/CSS/JS, Schriften, Icon) | beide |
+| `transcribe_files.py` | Whisper-Transkription von Audiodateien | beide |
 | `tts_gui.py` | Frühere CustomTkinter-Oberfläche (abgelöst) | beide |
 | `install.sh` / `fix_app.py` | Einrichtung / App-Bau | macOS |
 | `install.bat` / `TTS_Studio.bat` | Einrichtung / Starter | Windows |

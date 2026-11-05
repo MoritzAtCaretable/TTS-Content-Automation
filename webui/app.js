@@ -138,7 +138,7 @@ async function saveVoice(event) {
 function projectControls() {
   const blocked = S.running || S.projectPending || S.loading || S.adding || S.voicePending || S.modelPending;
   for (const id of ['project', 'btnAddProject', 'btnReloadProjects']) $("#" + id).disabled = blocked;
-  for (const id of ['btnSheet', 'btnReview', 'btnResetReview', 'model', 'btnFolder', 'btnReload', 'btnAdd']) {
+  for (const id of ['btnSheet', 'btnReview', 'btnResetReview', 'model', 'btnFolder', 'btnReload', 'btnAdd', 'btnTranscribe']) {
     $("#" + id).disabled = blocked || !S.state?.project_id;
   }
   for (const id of ['prefix', 'newMode', 'newText']) $("#" + id).disabled = blocked || !S.state?.project_id;
@@ -343,6 +343,111 @@ async function loadRows(quiet, selectOpen = false) {
 }
 
 /* ---------- Neue Texte ---------- */
+/* ---------- Audio → Transkript ---------- */
+
+async function transcribe() {
+  if (S.running || S.adding || S.loading || S.projectPending || !S.state?.project_id) return;
+  // Der Dateidialog läuft im Backend; danach übernimmt der Job-Mechanismus.
+  const r = await api("transcribe_audio", S.state.project_id);
+  if (r && r.started) setRunning(true, r.total);
+}
+
+/* Schneidet die Wörter einer Datei an Sprechpausen in einzelne Zeilen.
+   schwelle = 0 bedeutet: nicht trennen. */
+function splitWords(words, schwelle) {
+  const zeilen = [];
+  let akt = [];
+  words.forEach((w, i) => {
+    if (i && schwelle > 0 && w.p >= schwelle) { zeilen.push(akt.join("").trim()); akt = []; }
+    akt.push(w.w);
+  });
+  if (akt.length) zeilen.push(akt.join("").trim());
+  return zeilen.filter(Boolean);
+}
+
+/* Baut aus den Transkripten die Zeilen für das Feld „Neue Texte“.
+   Zerfällt eine Datei in mehrere Zeilen, werden die IDs durchnumeriert. */
+function buildLines(list, { split, schwelle, mitId }) {
+  const out = [];
+  for (const t of list) {
+    const teile = (split && t.words && t.words.length)
+      ? splitWords(t.words, schwelle) : [t.text];
+    teile.forEach((txt, i) => {
+      if (!mitId) { out.push(txt); return; }
+      const id = teile.length > 1
+        ? `${t.id}_${String(i + 1).padStart(2, "0")}` : t.id;
+      out.push(`${id} | ${txt}`);
+    });
+  }
+  return out;
+}
+
+/* Zeigt die Transkripte vor der Übernahme: ID-Form und Pausenschnitt lassen
+   sich einstellen, die Vorschau rechnet sofort mit — ohne neu zu transkribieren.
+   Liefert den fertigen Text oder null bei Abbruch. */
+function transcriptDialog(list) {
+  return new Promise(resolve => {
+    const host = $("#modal");
+    host.innerHTML = "";
+    const teilbar = list.some(t => t.words && t.words.length > 1);
+    const sheet = el(`
+      <div class="sheet">
+        <h3>Transkript übernehmen</h3>
+        <div class="body">${list.length} Datei(en) transkribiert. Die Zeilen werden unten an „Neue Texte“ angehängt — eingefügt wird erst mit „Ins Sheet einfügen“.</div>
+        <label class="opt"><input type="checkbox" id="tcIds" checked>Dateinamen als ID übernehmen</label>
+        <label class="opt"${teilbar ? "" : ' style="opacity:.5"'}><input type="checkbox" id="tcSplit" ${teilbar ? "checked" : "disabled"}>Bei Sprechpausen trennen</label>
+        <div class="opt gap" id="tcRow">
+          <span class="lbl">ab</span>
+          <input type="range" id="tcGap" min="0.2" max="2" step="0.1" value="0.5">
+          <span class="val" id="tcGapVal">0,5 s</span>
+        </div>
+        <div class="pre" id="tcPre"></div>
+        <div class="cnt" id="tcCount"></div>
+        <div class="acts">
+          <button class="btn quiet" data-no>Abbrechen</button>
+          <button class="btn turq" data-yes>Übernehmen</button>
+        </div>
+      </div>`);
+    host.appendChild(sheet);
+    host.classList.add("on");
+
+    const ids = $("#tcIds", sheet), split = $("#tcSplit", sheet);
+    const gap = $("#tcGap", sheet), gapVal = $("#tcGapVal", sheet);
+    const pre = $("#tcPre", sheet), cnt = $("#tcCount", sheet), row = $("#tcRow", sheet);
+
+    const zeilen = () => buildLines(list, {
+      split: split.checked, schwelle: parseFloat(gap.value), mitId: ids.checked,
+    });
+    const male = () => {
+      gapVal.textContent = parseFloat(gap.value).toFixed(1).replace(".", ",") + " s";
+      row.style.display = split.checked ? "" : "none";
+      const z = zeilen();
+      pre.textContent = z.join("\n");
+      cnt.textContent = `${z.length} Zeile(n) aus ${list.length} Datei(en)`;
+    };
+    ids.onchange = male; split.onchange = male; gap.oninput = male;
+    male();
+
+    const done = (v) => { host.classList.remove("on"); host.innerHTML = ""; resolve(v); };
+    $("[data-no]", sheet).onclick = () => done(null);
+    $("[data-yes]", sheet).onclick = () => done(zeilen().join("\n"));
+    host.onclick = (e) => { if (e.target === host) done(null); };
+  });
+}
+
+async function applyTranscripts(list) {
+  const text = await transcriptDialog(list);
+  if (text === null) return;
+  const feld = $("#newText");
+  const vorhanden = feld.value.replace(/\s+$/, "");
+  feld.value = vorhanden ? vorhanden + "\n" + text : text;
+  feld.focus();
+  feld.selectionStart = feld.selectionEnd = feld.value.length;
+  feld.scrollTop = feld.scrollHeight;
+  const anzahl = text.split("\n").filter(Boolean).length;
+  toast(`${anzahl} Zeile(n) in „Neue Texte“ übernommen.`, "ok");
+}
+
 async function addRows() {
   if (S.running) { toast("Bitte warten, bis der aktuelle Lauf beendet ist."); return; }
   if (S.adding || S.loading || S.projectPending || !S.state?.project_id) return;
@@ -403,6 +508,7 @@ function setRunning(on, total) {
   $("#btnStop").classList.toggle("on", on);
   $("#btnReload").disabled = on;
   $("#btnAdd").disabled = on;
+  $("#btnTranscribe").disabled = on;
   $("#btnUpdate").disabled = on;
   $("#model").disabled = on;
   voiceControls();
@@ -446,7 +552,13 @@ async function tick() {
       const outcome = r.outcome || {};
       $("#state").textContent = outcome.state === "failed" ? "Fehlgeschlagen" : outcome.state === "cancelled" ? "Abgebrochen" : "Fertig.";
       toast(outcome.message || "Lauf beendet.", outcome.state === "failed" ? "err" : "ok");
-      loadRows(true, true);        // Status im Sheet hat sich geändert
+      const transkripte = outcome.data?.transcripts;
+      if (transkripte && transkripte.length) {
+        // Transkription ändert das Sheet nicht — nur die Texte übernehmen.
+        applyTranscripts(transkripte);
+      } else {
+        loadRows(true, true);      // Status im Sheet hat sich geändert
+      }
     }
   }
   setTimeout(tick, 300);
@@ -528,6 +640,7 @@ async function boot() {
     renderRows();
   });
   $("#btnAdd").onclick = addRows;
+  $("#btnTranscribe").onclick = transcribe;
   $("#btnSheet").onclick = () => api("open_sheet");
   $("#btnReview").onclick = () => api("open_review");
   $("#btnResetReview").onclick = async () => {

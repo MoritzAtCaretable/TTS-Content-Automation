@@ -41,6 +41,13 @@ VOICE_MODELS = [
 ]
 
 PROGRESS_RE = re.compile(r"^@@PROGRESS (\d+)/(\d+)$")
+RESULT_PREFIX = "@@RESULT "
+
+# Audioformate, die ffmpeg und damit Whisper zuverlässig öffnet
+AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".oga",
+                  ".flac", ".aac", ".mp4", ".webm", ".mov", ".aiff", ".aif"}
+AUDIO_FILE_TYPES = ("Audiodateien ("
+                    + ";".join("*" + x for x in sorted(AUDIO_SUFFIXES)) + ")")
 
 
 def _guard(fn):
@@ -406,21 +413,25 @@ class Api:
             self._busy = True
             self.cancelled = False
             self.progress = {"done": 0, "total": 0}
-            self._outcome = {"state": "running", "id": uuid.uuid4().hex, "message": message}
+            self._outcome = {"state": "running", "id": uuid.uuid4().hex, "message": message, "data": None}
             job_id = self._outcome["id"]
         def worker():
-            state, message = "failed", "Vorgang unerwartet beendet"
+            state, message, data = "failed", "Vorgang unerwartet beendet", None
             try:
                 result = operation() or {}
                 state = "cancelled" if self.cancelled else "completed"
                 message = result.get("message", "Vorgang abgeschlossen.")
+                # Ein Job darf ein Ergebnis mitgeben — die Oberfläche holt es
+                # über poll() aus dem Outcome ab.
+                data = result.get("data")
                 self._log(message)
             except Exception as e:
                 state, message = "failed", str(e)
                 self._log("❌ " + message)
             finally:
                 with self._job_lock:
-                    self._outcome = {"state": state, "id": job_id, "message": message}
+                    self._outcome = {"state": state, "id": job_id,
+                                     "message": message, "data": data}
                     self._busy = False
         try:
             threading.Thread(target=worker, daemon=True).start()
@@ -468,6 +479,82 @@ class Api:
             return {"message": "Generierung abgeschlossen. Qualitätsbefunde stehen in der Review-Seite."}
         finally:
             self.process = None
+
+    # --------------------------------------------------- Audio → Transkript
+
+    def run_transcription(self, paths):
+        """Lässt Whisper die Dateien transkribieren (Subprozess, abbrechbar).
+
+        Liefert die Transkripte als Job-Ergebnis zurück; die Oberfläche trägt
+        sie anschließend ins Feld „Neue Texte“ ein.
+        """
+        env = os.environ.copy()
+        env.update(PYTHONUNBUFFERED="1",
+                   TTS_TRANSCRIBE_FILES=json.dumps(paths, ensure_ascii=False))
+        cmd = [sys.executable, str(self.root / "transcribe_files.py")]
+        treffer = []
+        try:
+            p = subprocess.Popen(cmd, cwd=str(self.root), stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
+            self.process = p
+            if self.cancelled:
+                p.terminate()
+            for line in p.stdout:
+                line = line.rstrip("\n")
+                m = PROGRESS_RE.match(line)
+                if m:
+                    self.progress = {"done": int(m.group(1)), "total": int(m.group(2))}
+                elif line.startswith(RESULT_PREFIX):
+                    try:
+                        treffer.append(json.loads(line[len(RESULT_PREFIX):]))
+                    except json.JSONDecodeError:
+                        self.log_queue.put(line)
+                else:
+                    self.log_queue.put(line)
+            code = p.wait()
+            if self.cancelled:
+                return {"message": "Transkription abgebrochen.",
+                        "data": {"transcripts": treffer} if treffer else None}
+            if code:
+                raise RuntimeError(f"Transkription mit Fehlercode {code} beendet. Siehe Protokoll.")
+            if not treffer:
+                raise RuntimeError("Keine Datei konnte transkribiert werden. Siehe Protokoll.")
+            return {"message": f"{len(treffer)} Transkript(e) erstellt.",
+                    "data": {"transcripts": treffer}}
+        finally:
+            self.process = None
+
+    @_guard
+    @_idle
+    def transcribe_audio(self, project_id=None) -> dict:
+        """Fragt nach Audiodateien und startet die Transkription."""
+        self._require_project(project_id)
+        import webview
+        result = self._window.create_file_dialog(
+            webview.OPEN_DIALOG, allow_multiple=True,
+            directory=self.folder if os.path.isdir(self.folder) else str(self.root),
+            file_types=(AUDIO_FILE_TYPES, "Alle Dateien (*.*)"))
+        if not result:
+            return {"started": False}
+
+        paths, uebersprungen = [], []
+        for item in result:
+            if Path(item).suffix.lower() in AUDIO_SUFFIXES:
+                paths.append(str(item))
+            else:
+                uebersprungen.append(Path(item).name)
+        if not paths:
+            raise ValueError("Keine unterstützte Audiodatei ausgewählt. Möglich sind: "
+                             + ", ".join(sorted(x.lstrip(".") for x in AUDIO_SUFFIXES)))
+        if uebersprungen:
+            self._log("⚠ Übersprungen (kein unterstütztes Audioformat): "
+                      + ", ".join(uebersprungen))
+
+        self.progress = {"done": 0, "total": len(paths)}
+        self._log(f"🎧 Transkribiere {len(paths)} Datei(en)…")
+        result = self.launch_job(lambda: self.run_transcription(paths),
+                                 "Transkription läuft")
+        return {**result, "started": True, "total": len(paths)}
 
     @_guard
     @_idle
