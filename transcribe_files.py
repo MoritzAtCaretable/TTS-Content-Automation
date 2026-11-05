@@ -42,6 +42,13 @@ import sheets_to_elevenlabs_qc_local as pipeline      # noqa: E402
 AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".oga",
                   ".flac", ".aac", ".mp4", ".webm", ".mov", ".aiff", ".aif"}
 
+# Für die Transkription bewusst ein anderes Modell als in der
+# Qualitätskontrolle: large-v3 setzt Satzzeichen und Großschreibung deutlich
+# verlässlicher als medium. Es ist rund 1,7x langsamer, was hier nicht stört —
+# transkribiert wird gelegentlich, die QC dagegen bei jedem generierten Audio.
+# Über TTS_WHISPER_MODEL überschreibbar.
+DEFAULT_MODEL = "large-v3"
+
 # Kürzeste Stille, die überhaupt als Pause in Frage kommt. Bewusst klein —
 # geschnitten wird erst nach der Schwelle, die in der Oberfläche eingestellt
 # ist; hier sollen nur alle Kandidaten erfasst werden.
@@ -139,7 +146,7 @@ def main() -> int:
         print("   macOS: brew install ffmpeg")
         return 1
 
-    modell_name = os.environ.get("TTS_WHISPER_MODEL", pipeline.WHISPER_MODEL)
+    modell_name = os.environ.get("TTS_WHISPER_MODEL") or DEFAULT_MODEL
     print(f"🧠 Lade Whisper-Modell „{modell_name}“… (beim ersten Mal wird es heruntergeladen)")
     modell = whisper.load_model(modell_name)
     print(f"   Modell geladen. {len(dateien)} Datei(en) zu transkribieren.\n")
@@ -153,8 +160,15 @@ def main() -> int:
         try:
             if not os.path.exists(pfad):
                 raise FileNotFoundError("Datei nicht gefunden")
+            # condition_on_previous_text=False: Whisper reicht sonst den
+            # bisherigen Text als Kontext ins nächste 30-Sekunden-Fenster.
+            # Bei langen oder wiederkehrenden Aufnahmen (Refrain!) schaukeln
+            # sich Fehler darüber auf — Satzzeichen und Großschreibung brechen
+            # weg, Wörter verfälschen sich fortlaufend. Ohne die Kopplung wird
+            # jedes Fenster für sich ausgewertet.
             result = modell.transcribe(pfad, language=pipeline.WHISPER_LANGUAGE,
-                                       fp16=False, word_timestamps=True)
+                                       fp16=False, word_timestamps=True,
+                                       condition_on_previous_text=False)
             text = str(result.get("text", "")).strip()
             if not text:
                 raise ValueError("Whisper hat keinen Text erkannt")

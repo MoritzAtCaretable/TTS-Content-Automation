@@ -151,9 +151,24 @@ statt sie zu tippen:
    Inhalt bleibt erhalten. Geschrieben wird erst mit **Ins Sheet einfügen**, so
    lässt sich vorher noch korrigieren.
 
-Es gilt dasselbe Whisper-Modell wie in der Qualitätskontrolle (`WHISPER_MODEL`,
-Standard `medium`); über die Umgebungsvariable `TTS_WHISPER_MODEL` lässt sich für
-die Transkription ein anderes wählen.
+Die Transkription nutzt **`large-v3`** — ein anderes Modell als die
+Qualitätskontrolle (die bleibt bei `WHISPER_MODEL`, Standard `medium`). Grund:
+`large-v3` setzt Satzzeichen und Großschreibung deutlich verlässlicher. Es ist
+rund 1,7× langsamer (auf einem M4 etwa 0,6× Echtzeit, ein 4-Minuten-Stück also
+gut 6 Minuten), was hier nicht stört — transkribiert wird gelegentlich, die QC
+dagegen bei jedem generierten Audio. Über `TTS_WHISPER_MODEL` überschreibbar.
+
+Außerdem läuft die Transkription mit `condition_on_previous_text=False`. Whisper
+reicht sonst den bisherigen Text als Kontext ins nächste 30-Sekunden-Fenster;
+bei langen oder wiederkehrenden Aufnahmen (Refrain!) schaukeln sich Fehler
+darüber auf — Satzzeichen und Großschreibung brechen weg, Wörter verfälschen
+sich fortlaufend. Ohne die Kopplung wird jedes Fenster für sich ausgewertet.
+
+> Grenze: Bei langem, stark repetitivem Material werden die Pausengrenzen
+> unzuverlässig (Whispers Wortzeiten driften gegenüber dem Audio), und Whisper
+> kann Wörter erfinden. Gesang ist für Whisper generell schwierig — es ist auf
+> gesprochene Sprache trainiert. Für Liedtexte bringt eine Gesangs-Isolation vor
+> der Transkription mehr als ein größeres Modell.
 
 > Zur Pausenerkennung: Whisper-Wortzeiten reichen dafür nicht — die Endzeiten
 > laufen in die Stille hinein und machen Pausen künstlich kurz (ein 0,70 s langes
