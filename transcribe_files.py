@@ -15,12 +15,27 @@ Zu jedem Wort wird die Länge der Sprechpause davor mitgeliefert. Damit kann die
 Oberfläche den Text an Pausen in einzelne Sprechzeilen schneiden — und zwar
 sofort beim Verschieben des Reglers, ohne neu zu transkribieren.
 
+ABLAUF
+1. Sprechbereiche im Audio bestimmen (pydub) — daraus kommen später die echten
+   Pausenlängen.
+2. Die Bereiche zu Abschnitten von höchstens ~28 s bündeln. Geschnitten wird
+   ausschließlich in einer Pause, nie mitten im Satz.
+3. Jeden Abschnitt einzeln transkribieren und die Wort-Zeitstempel um den
+   Abschnittsbeginn zurückrechnen.
+4. Jedem Wort die Pause davor zuordnen.
+
+WARUM ABSCHNITTE
+Whisper arbeitet in 30-Sekunden-Fenstern. Über eine lange Datei hinweg driften
+die Wort-Zeitstempel gegenüber dem echten Audio; die Zuordnung Wort →
+Sprechbereich greift dann daneben, und die Pausenlängen stimmen nicht mehr.
+Kurze Abschnitte halten die Zeitstempel genau. Nebenbei entfällt damit auch die
+Verschleppung von Erkennungsfehlern über Fenstergrenzen hinweg.
+
 WARUM DIE PAUSEN AUS DEM AUDIO KOMMEN
-Whisper liefert zwar Wort-Zeitstempel, aber die Endzeiten laufen in die Stille
-hinein: ein 0,70 s langes „Banane“ endet laut Whisper erst bei 1,26 s. Die
-Lücke zwischen zwei Wörtern wird dadurch deutlich zu klein gemessen. Deshalb
-werden die Sprechbereiche zusätzlich direkt im Audio bestimmt (pydub) und die
-Pause aus dem Abstand dieser Bereiche berechnet.
+Whispers Wort-Endzeiten laufen in die Stille hinein: ein 0,70 s langes „Banane“
+endet laut Whisper erst bei 1,26 s. Die Lücke zwischen zwei Wörtern wird dadurch
+deutlich zu klein gemessen. Die Pausen stammen deshalb aus der Stilleerkennung
+im Audio, nicht aus den Zeitstempeln.
 """
 
 from __future__ import annotations
@@ -29,6 +44,7 @@ import os
 import re
 import sys
 import json
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -56,6 +72,15 @@ MIN_SILENCE_MS = 120
 # Toleranz beim Zuordnen eines Wortes zu einem Sprechbereich
 MATCH_TOLERANCE_S = 0.20
 
+# Abschnittsbildung. Ab TARGET darf an der nächsten Pause geschnitten werden,
+# spätestens bei MAX muss es sein — Whispers Fenster ist 30 s lang, darunter
+# bleiben die Zeitstempel genau.
+CHUNK_TARGET_S = 20.0
+CHUNK_MAX_S = 28.0
+# Etwas Audio vor und nach dem Abschnitt mitgeben, damit Laute am Rand nicht
+# abgeschnitten werden.
+CHUNK_PAD_S = 0.15
+
 
 def id_from_filename(path: str) -> str:
     """Macht aus einem Dateinamen eine brauchbare, stabile ID.
@@ -74,12 +99,8 @@ def id_from_filename(path: str) -> str:
     return s or "audio"
 
 
-def speech_regions(path: str):
+def regions_of(audio: AudioSegment):
     """Sprechbereiche (Start, Ende) in Sekunden — alles dazwischen ist Pause."""
-    try:
-        audio = AudioSegment.from_file(path)
-    except Exception:
-        return []
     if len(audio) == 0:
         return []
     # Relative Schwelle: leise Aufnahmen sollen nicht komplett als Stille gelten.
@@ -93,6 +114,29 @@ def speech_regions(path: str):
     return [(a / 1000.0, b / 1000.0) for a, b in roh]
 
 
+def build_chunks(regions):
+    """Bündelt Sprechbereiche zu Abschnitten von höchstens ~CHUNK_MAX_S.
+
+    Geschnitten wird immer zwischen zwei Sprechbereichen, also in einer Pause —
+    nie mitten in einem Wort oder Satz. Ein einzelner Bereich, der für sich
+    schon länger als CHUNK_MAX_S ist (durchgehendes Sprechen ohne Atempause),
+    bleibt am Stück; Whisper fenstert den dann intern.
+    """
+    if not regions:
+        return []
+    chunks = []
+    start, vor_ende = regions[0]
+    for a, b in regions[1:]:
+        bisher = vor_ende - start
+        mit_naechstem = b - start
+        if bisher >= CHUNK_TARGET_S or mit_naechstem > CHUNK_MAX_S:
+            chunks.append((start, vor_ende))
+            start = a
+        vor_ende = b
+    chunks.append((start, vor_ende))
+    return chunks
+
+
 def region_index(t: float, regions) -> int:
     """Index des Sprechbereichs, in den der Zeitpunkt fällt (-1 = keiner)."""
     for i, (a, b) in enumerate(regions):
@@ -101,18 +145,19 @@ def region_index(t: float, regions) -> int:
     return -1
 
 
-def words_with_pauses(result, regions):
+def words_with_pauses(words, regions):
     """Wörter mit der Pausenlänge davor (Sekunden).
+
+    words: [{"word", "start", "end"}] mit Zeiten bezogen auf die ganze Datei.
 
     Liegt ein Wortpaar in zwei verschiedenen Sprechbereichen, ist die Pause der
     echte stille Abstand dieser Bereiche. Sonst dient die Wortlücke als Rückfall
     (z.B. wenn die Stilleerkennung nichts gefunden hat).
     """
-    roh = [w for s in result.get("segments", []) for w in s.get("words", [])]
     out = []
     vor_ende = None          # Ende des vorigen Wortes laut Whisper
     vor_region = None        # Sprechbereich des vorigen Wortes
-    for w in roh:
+    for w in words:
         text = str(w.get("word", ""))
         if not text.strip():
             continue
@@ -128,6 +173,60 @@ def words_with_pauses(result, regions):
         out.append({"w": text, "p": round(pause, 2)})
         vor_ende, vor_region = ende, r
     return out
+
+
+def _transcribe(modell, pfad: str):
+    """Ein Whisper-Lauf. condition_on_previous_text=False: Whisper reicht sonst
+    den bisherigen Text als Kontext weiter, wodurch sich Erkennungsfehler über
+    die Fenster hinweg aufschaukeln."""
+    return modell.transcribe(pfad, language=pipeline.WHISPER_LANGUAGE,
+                             fp16=False, word_timestamps=True,
+                             condition_on_previous_text=False)
+
+
+def _words_of(result, versatz: float):
+    """Wörter eines Laufs, Zeitstempel auf die ganze Datei umgerechnet."""
+    return [{"word": w.get("word", ""),
+             "start": float(w.get("start", 0.0)) + versatz,
+             "end": float(w.get("end", w.get("start", 0.0))) + versatz}
+            for s in result.get("segments", []) for w in s.get("words", [])]
+
+
+def transcribe_file(modell, pfad: str):
+    """Transkribiert eine Datei abschnittsweise.
+
+    Returns (text, woerter_mit_pausen, anzahl_abschnitte).
+    """
+    try:
+        audio = AudioSegment.from_file(pfad)
+    except Exception:
+        audio = None
+
+    if audio is None or len(audio) == 0:
+        # Ohne pydub-Audio bleibt nur der direkte Lauf über die ganze Datei.
+        r = _transcribe(modell, pfad)
+        return str(r.get("text", "")).strip(), words_with_pauses(_words_of(r, 0.0), []), 1
+
+    regions = regions_of(audio)
+    chunks = build_chunks(regions) or [(0.0, len(audio) / 1000.0)]
+
+    texte, roh = [], []
+    with tempfile.TemporaryDirectory(prefix="tts_chunks_") as tmp:
+        for k, (a, b) in enumerate(chunks):
+            a_ms = max(0, int((a - CHUNK_PAD_S) * 1000))
+            b_ms = min(len(audio), int((b + CHUNK_PAD_S) * 1000))
+            if b_ms <= a_ms:
+                continue
+            teil = audio[a_ms:b_ms].set_channels(1).set_frame_rate(16000)
+            ziel = os.path.join(tmp, f"abschnitt_{k:03d}.wav")
+            teil.export(ziel, format="wav")
+            r = _transcribe(modell, ziel)
+            t = str(r.get("text", "")).strip()
+            if t:
+                texte.append(t)
+            roh.extend(_words_of(r, a_ms / 1000.0))
+
+    return " ".join(texte).strip(), words_with_pauses(roh, regions), len(chunks)
 
 
 def main() -> int:
@@ -160,22 +259,13 @@ def main() -> int:
         try:
             if not os.path.exists(pfad):
                 raise FileNotFoundError("Datei nicht gefunden")
-            # condition_on_previous_text=False: Whisper reicht sonst den
-            # bisherigen Text als Kontext ins nächste 30-Sekunden-Fenster.
-            # Bei langen oder wiederkehrenden Aufnahmen (Refrain!) schaukeln
-            # sich Fehler darüber auf — Satzzeichen und Großschreibung brechen
-            # weg, Wörter verfälschen sich fortlaufend. Ohne die Kopplung wird
-            # jedes Fenster für sich ausgewertet.
-            result = modell.transcribe(pfad, language=pipeline.WHISPER_LANGUAGE,
-                                       fp16=False, word_timestamps=True,
-                                       condition_on_previous_text=False)
-            text = str(result.get("text", "")).strip()
+            text, woerter, abschnitte = transcribe_file(modell, pfad)
             if not text:
                 raise ValueError("Whisper hat keinen Text erkannt")
-            woerter = words_with_pauses(result, speech_regions(pfad))
-            pausen = sorted((w["p"] for w in woerter[1:]), reverse=True)[:3]
-            print(f"[{i}/{gesamt}] {name}")
+            print(f"[{i}/{gesamt}] {name}"
+                  + (f" — in {abschnitte} Abschnitte geteilt" if abschnitte > 1 else ""))
             print(f"            „{text}“")
+            pausen = sorted((w["p"] for w in woerter[1:]), reverse=True)[:3]
             if pausen:
                 print("            längste Pausen: "
                       + ", ".join(f"{p:.2f}s" for p in pausen))

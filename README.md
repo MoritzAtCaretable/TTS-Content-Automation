@@ -164,11 +164,19 @@ bei langen oder wiederkehrenden Aufnahmen (Refrain!) schaukeln sich Fehler
 darüber auf — Satzzeichen und Großschreibung brechen weg, Wörter verfälschen
 sich fortlaufend. Ohne die Kopplung wird jedes Fenster für sich ausgewertet.
 
-> Grenze: Bei langem, stark repetitivem Material werden die Pausengrenzen
-> unzuverlässig (Whispers Wortzeiten driften gegenüber dem Audio), und Whisper
-> kann Wörter erfinden. Gesang ist für Whisper generell schwierig — es ist auf
-> gesprochene Sprache trainiert. Für Liedtexte bringt eine Gesangs-Isolation vor
-> der Transkription mehr als ein größeres Modell.
+Lange Aufnahmen werden **vor** der Transkription in Abschnitte von höchstens
+28 Sekunden zerlegt — geschnitten wird ausschließlich in einer Sprechpause, nie
+mitten im Satz. Jeder Abschnitt geht einzeln durch Whisper, die Wort-Zeitstempel
+werden anschließend auf die ganze Datei zurückgerechnet. Grund: Whispers
+Zeitstempel driften über eine lange Datei hinweg gegenüber dem Audio, wodurch
+die Zuordnung Wort → Sprechbereich danebengreift und die Pausenlängen nicht mehr
+stimmen. Ein einzelner Sprechbereich ohne Atempause bleibt am Stück.
+
+> Grenze: Gesang ist für Whisper generell schwierig — es ist auf gesprochene
+> Sprache trainiert. Für Liedtexte bringt eine Gesangs-Isolation vor der
+> Transkription mehr als ein größeres Modell. Bei stark repetitivem Material
+> (immer wieder derselbe Wortlaut) lässt Whisper außerdem Wiederholungen aus,
+> wodurch einzelne Pausengrenzen verrutschen können.
 
 > Zur Pausenerkennung: Whisper-Wortzeiten reichen dafür nicht — die Endzeiten
 > laufen in die Stille hinein und machen Pausen künstlich kurz (ein 0,70 s langes
